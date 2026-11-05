@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>傅里叶变换入门 · 音视频</title>
-  <link rel="stylesheet" href="assets/style.css">
+  <title>学习笔记</title>
+  <link rel="stylesheet" href="傅里叶变换/assets/style.css">
 </head>
 <body>
   <div class="wrap">
@@ -13,178 +13,30 @@
         <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
           <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
         </svg>
-        傅里叶变换 · 音视频
+        学习笔记
       </a>
       <nav>
-        <a href="index.html" aria-current="page">目录</a>
-        <a href="00-sine.html">第 0 篇</a>
-        <a href="05-dft.html">第 5 篇</a>
-        <a href="10-image-fft.html">第 10 篇</a>
-        <a href="13-dct.html">第 13 篇</a>
+        <a href="index.html" aria-current="page">首页</a>
+        <a href="傅里叶变换/index.html">傅里叶变换</a>
       </nav>
     </header>
 
-    <p class="kicker">从一条正弦波开始</p>
-    <h1>傅里叶变换在声音与图像里的应用</h1>
-    <p class="lede">这套笔记假定你还没学过傅里叶变换。每一篇都从能看见的现象写起，公式旁边有白话，页面里可以拖动滑块，文件夹里有可以直接运行的 Python 脚本。</p>
+    <p class="kicker">边学边记</p>
+    <h1>学习笔记</h1>
+    <p class="lede">这里汇总各主题的入门笔记。从现象出发，配合图示、可交互页面和可运行的代码。</p>
 
-    <h2>现在可以读</h2>
+    <h2>笔记目录</h2>
     <div class="cards">
-      <a class="card" href="00-sine.html">
-        <span class="pill">第 0 篇 · 约 40 分钟</span>
-        <h2>环境与第一张正弦波</h2>
-        <p>装好 Python，画出 y = A sin(2πft + φ)，分清振幅、频率和相位。</p>
-      </a>
-      <a class="card" href="01-sampling.html">
-        <span class="pill">第 1 篇 · 约 50 分钟</span>
-        <h2>声音和图像都是一串数字</h2>
-        <p>采样、量化，写出 440 Hz 的 wav，再生成一张渐变图和 8 帧画面。</p>
-      </a>
-      <a class="card" href="02-sum.html">
-        <span class="pill">第 2 篇 · 约 45 分钟</span>
-        <h2>把复杂波形拆成纯音</h2>
-        <p>把两条正弦相加，再用奇数倍谐波把方波拼出来，并能听出差别。</p>
-      </a>
-      <a class="card" href="03-spectrum.html">
-        <span class="pill">第 3 篇 · 约 40 分钟</span>
-        <h2>时域和频域</h2>
-        <p>同一份配方画成波形和频谱。柱高是振幅，相位先不进柱子。</p>
-      </a>
-      <a class="card" href="04-series.html">
-        <span class="pill">第 4 篇 · 约 50 分钟</span>
-        <h2>傅里叶级数</h2>
-        <p>用对齐程度算出周期波形的系数，并看见方波跳变旁的过冲停在大约 1.18。</p>
-      </a>
-      <a class="card" href="05-dft.html">
-        <span class="pill">第 5 篇 · 约 55 分钟</span>
-        <h2>离散傅里叶变换</h2>
-        <p>N 个采样点变成 N 个频率格子，手算小 DFT，并对照幅度与相位。</p>
-      </a>
-      <a class="card" href="06-fft.html">
-        <span class="pill">第 6 篇 · 约 50 分钟</span>
-        <h2>FFT、逆变换与窗</h2>
-        <p>正变换、改频谱、再变回去；看见泄漏，用汉宁窗，听一个变闷的音。</p>
-      </a>
-      <a class="card" href="07-audio.html">
-        <span class="pill">第 7 篇 · 约 50 分钟</span>
-        <h2>真实声音的频谱</h2>
-        <p>读 wav，看基频和泛音，比较不同音色，标出幅度谱上的峰。</p>
-      </a>
-      <a class="card" href="08-stft.html">
-        <span class="pill">第 8 篇 · 约 50 分钟</span>
-        <h2>短时傅里叶与语谱图</h2>
-        <p>把窗一次次往前滑，读懂时间 × 频率的一张图。</p>
-      </a>
-      <a class="card" href="09-effects.html">
-        <span class="pill">第 9 篇 · 约 45 分钟</span>
-        <h2>均衡与简单降噪</h2>
-        <p>三段均衡改音色，谱减法压噪声，并听清它为什么会伤语音。</p>
-      </a>
-      <a class="card" href="10-image-fft.html">
-        <span class="pill">第 10 篇 · 约 45 分钟</span>
-        <h2>图像的二维频谱</h2>
-        <p>横条纹、竖条纹、斜条纹在二维频谱上各长什么样。</p>
-      </a>
-      <a class="card" href="11-image-filter.html">
-        <span class="pill">第 11 篇 · 约 45 分钟</span>
-        <h2>在频率上改照片</h2>
-        <p>低通模糊、高通留边，再用陷波削弱周期条纹。</p>
-      </a>
-      <a class="card" href="12-video.html">
-        <span class="pill">第 12 篇 · 约 40 分钟</span>
-        <h2>视频多出来的时间轴</h2>
-        <p>帧率，以及一个像素随时间的闪烁波形和频谱。</p>
-      </a>
-      <a class="card" href="13-dct.html">
-        <span class="pill">第 13 篇 · 约 50 分钟</span>
-        <h2>压缩为什么喜欢频域</h2>
-        <p>用 8×8 的 DCT 走通 JPEG 的核心一步，并点到 MP3 与视频。</p>
+      <a class="card" href="傅里叶变换/index.html">
+        <span class="pill">第 1 套 · 14 篇</span>
+        <h2>傅里叶变换 · 音视频</h2>
+        <p>从一条正弦波开始，理解频谱、DFT、FFT，以及声音、图像和视频里的应用。</p>
       </a>
     </div>
 
-    <h2>怎么读</h2>
-    <ol>
-      <li>用浏览器打开本页，按顺序进入每一篇。直接双击 <code>index.html</code> 即可。</li>
-      <li>先拖页面里的滑块，把图看懂，再运行对应的 Python 脚本。</li>
-      <li>脚本顶部标着「改这里」的数字就是练习。课文用的对照图每次都会按固定参数重画。</li>
-    </ol>
-    <div class="callout note">
-      <p>第 0 篇会带你安装 <code>numpy</code> 和 <code>matplotlib</code>。只关心声音可在第 9 篇停；只关心图像可从第 10 篇接着读。整套从第 0 篇读到第 13 篇最顺。</p>
-    </div>
-
-    <h2>整套路线</h2>
-    <ol class="route">
-      <li>
-        <span class="no">第 0 篇</span>
-        <span><a href="00-sine.html">环境与第一张正弦波</a><span class="goal">画出正弦，认识振幅、频率、相位。</span></span>
-        <span class="pill">已写</span>
-      </li>
-      <li>
-        <span class="no">第 1 篇</span>
-        <span><a href="01-sampling.html">声音和图像都是一串数字</a><span class="goal">采样、量化，wav 与灰度图。</span></span>
-        <span class="pill">已写</span>
-      </li>
-      <li>
-        <span class="no">第 2 篇</span>
-        <span><a href="02-sum.html">把复杂波形拆成纯音</a><span class="goal">两个正弦相加，并用谐波把方波拼出来。</span></span>
-        <span class="pill">已写</span>
-      </li>
-      <li>
-        <span class="no">第 3 篇</span>
-        <span><a href="03-spectrum.html">时域和频域</a><span class="goal">同一段波的两种看法：每个时刻，以及每种频率。</span></span>
-        <span class="pill">已写</span>
-      </li>
-      <li>
-        <span class="no">第 4 篇</span>
-        <span><a href="04-series.html">傅里叶级数</a><span class="goal">周期信号的配方，以及方波的奇数谐波。</span></span>
-        <span class="pill">已写</span>
-      </li>
-      <li>
-        <span class="no">第 5 篇</span>
-        <span><a href="05-dft.html">离散傅里叶变换</a><span class="goal">有限个点怎么变成频率格子，手算一次小 DFT。</span></span>
-        <span class="pill">已写</span>
-      </li>
-      <li>
-        <span class="no">第 6 篇</span>
-        <span><a href="06-fft.html">FFT、逆变换与窗</a><span class="goal">正变换、改频谱、再变回去。</span></span>
-        <span class="pill">已写</span>
-      </li>
-      <li>
-        <span class="no">第 7 篇</span>
-        <span><a href="07-audio.html">真实声音的频谱</a><span class="goal">读 wav，看基频、泛音和音色。</span></span>
-        <span class="pill">已写</span>
-      </li>
-      <li>
-        <span class="no">第 8 篇</span>
-        <span><a href="08-stft.html">短时傅里叶与语谱图</a><span class="goal">时间 × 频率，读懂一张语谱图。</span></span>
-        <span class="pill">已写</span>
-      </li>
-      <li>
-        <span class="no">第 9 篇</span>
-        <span><a href="09-effects.html">均衡与简单降噪</a><span class="goal">在频谱上改增益，再听回去的声音。</span></span>
-        <span class="pill">已写</span>
-      </li>
-      <li>
-        <span class="no">第 10 篇</span>
-        <span><a href="10-image-fft.html">图像的二维频谱</a><span class="goal">横条纹、竖条纹在频谱上长什么样。</span></span>
-        <span class="pill">已写</span>
-      </li>
-      <li>
-        <span class="no">第 11 篇</span>
-        <span><a href="11-image-filter.html">在频率上改照片</a><span class="goal">模糊、边缘、削弱周期条纹。</span></span>
-        <span class="pill">已写</span>
-      </li>
-      <li>
-        <span class="no">第 12 篇</span>
-        <span><a href="12-video.html">视频多出来的时间轴</a><span class="goal">帧率，以及一个像素随时间的闪烁。</span></span>
-        <span class="pill">已写</span>
-      </li>
-      <li>
-        <span class="no">第 13 篇</span>
-        <span><a href="13-dct.html">压缩为什么喜欢频域</a><span class="goal">用 8×8 的 DCT 走通 JPEG 的核心一步。</span></span>
-        <span class="pill">已写</span>
-      </li>
-    </ol>
+    <footer class="site-foot">
+      <p>更多主题会陆续加到这里。</p>
+    </footer>
   </div>
 </body>
 </html>
