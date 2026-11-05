@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 8 篇 · 短时傅里叶与语谱图</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        傅里叶变换 · 音视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="08-stft.html" aria-current="page">第 8 篇</a>
+        <a href="09-effects.html">第 9 篇</a>
+        <a href="10-image-fft.html">第 10 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 8 篇 · 时间 × 频率 · 约 50 分钟</p>
+    <h1>短时傅里叶与语谱图</h1>
+    <p class="lede">整段声音只做一次频谱，会把「先低后高」揉成一根平均柱。这一篇改成每隔大约 20 毫秒算一次：横轴仍是时间，纵轴是频率，颜色表示这一小段有多响。这样就能读出 chirp 怎么爬、元音的谐波怎么一起晃。</p>
+    <div class="meta">
+      <span class="pill">先读：第 3 篇、第 6 篇</span>
+      <span class="pill">会看到语谱图和窗长权衡</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#why">为什么要「短时」</a></li>
+        <li><a href="#frame">帧长、步长、重叠</a></li>
+        <li><a href="#chirp">chirp 的语谱图</a></li>
+        <li><a href="#vowel">会变的谐波带</a></li>
+        <li><a href="#tradeoff">短窗与长窗</a></li>
+        <li><a href="#try">在网页里改窗长</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改窗长</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="why">为什么要「短时」</h2>
+    <p>第 3 篇的频谱回答：「整段里有哪些频率」。若频率本身在变——例如哨音从低滑到高——一次 FFT 只会告诉你「高低都出现过」，却说不清<strong>什么时候</strong>在低、什么时候在高。</p>
+    <p><strong>短时傅里叶变换（STFT）</strong>的做法是：把声音切成许多很短的片段，每一段单独做频谱。把这些频谱按时间排开，就得到<strong>语谱图</strong>：横轴时间，纵轴频率，颜色越深（或越亮）表示这一小段里该频率越响。</p>
+
+    <h2 id="frame">帧长、步长、重叠</h2>
+    <p>每一小段叫一<strong>帧</strong>。三个常用名字：</p>
+    <ul>
+      <li><strong>帧长</strong>（窗长）：一帧有多少个采样点。44100 Hz 时，1024 点大约 23 ms。</li>
+      <li><strong>步长</strong>（hop）：下一帧相对上一帧往前跳多少点。步长约 882 点时，大约每 20 ms 算一次频谱。</li>
+      <li><strong>重叠</strong>：帧长减去步长。帧长 40 ms、步长 20 ms，就重叠一半。</li>
+    </ul>
+    <p class="formula">重叠 = 帧长 − 步长</p>
+    <figure>
+      <img src="assets/figures/ch08_frames.png" alt="相邻三帧在时间轴上半重叠，以及帧长、步长、重叠的柱状示意">
+      <figcaption>图 8-1　上图三帧半重叠铺在波形上。下图记住三个毫秒数：帧长 40、步长 20、重叠 20。课文脚本默认步长约 20 ms。</figcaption>
+    </figure>
+    <p>每一帧常先乘<strong>汉宁窗</strong>，让两端变软，减少「突然切断」带来的假频谱。脚本里是 <code>np.hanning(nperseg)</code>，再对加窗后的帧做 <code>np.fft.rfft</code>。</p>
+
+    <h2 id="chirp">chirp 的语谱图</h2>
+    <p>chirp 是频率随时间扫过去的声音。这里从 200 Hz 线性扫到 2000 Hz，时长 2 秒。时域看起来像越来越密的波纹；语谱图上应是一条从左下往右上爬的亮线。</p>
+    <figure>
+      <img src="assets/figures/ch08_chirp.png" alt="chirp 的时域波形与语谱图，语谱图上有一条上升的亮线">
+      <figcaption>图 8-2　上图是波形，下图是语谱图。颜色按相对响度（分贝）上色：越靠近暖色/深色，这一小段越响。亮线跟着瞬时频率走。</figcaption>
+    </figure>
+    <p>听这段 chirp：</p>
+    <audio controls src="assets/audio/ch08_chirp.wav"></audio>
+
+    <h2 id="vowel">会变的谐波带</h2>
+    <p>元音不是一根正弦。基频附近还有 2 倍、3 倍……谐波。下面合成一段「元音感」的音：基频在大约 100–180 Hz 之间缓慢起伏，谐波振幅按固定比例叠上去。语谱图上应出现几条几乎平行的亮带，一起上下晃。</p>
+    <figure>
+      <img src="assets/figures/ch08_vowel.png" alt="元音感合成音的波形与多条平行谐波带的语谱图">
+      <figcaption>图 8-3　上图橙色示意基频走势。下图几条带的间距由基频决定：基频升高，整排带一起往上挪。</figcaption>
+    </figure>
+    <p>听这段合成音：</p>
+    <audio controls src="assets/audio/ch08_vowel.wav"></audio>
+
+    <h2 id="tradeoff">短窗与长窗</h2>
+    <p>窗长不能又短又长。频率轴上相邻两个格子的间距大约是</p>
+    <p class="formula">Δf ≈ 采样率 / 窗长</p>
+    <p>窗短 → 每一帧盯住的时间更窄，时间变化看得清，但 Δf 变大，频率糊。窗长 → 频率格子更细，但一帧里混进更长的一段时间，爬升的亮线会变「胖」。</p>
+    <figure>
+      <img src="assets/figures/ch08_compare.png" alt="同一段 chirp：左侧短窗时间清楚频率糊，右侧长窗频率清楚时间糊">
+      <figcaption>图 8-4　同一段 chirp。左：256 点（约 6 ms），亮线更跟手，但上下更粗。右：2048 点（约 46 ms），上下更细，但拐弯处拖影更长。</figcaption>
+    </figure>
+
+    <h2 id="try">在网页里改窗长</h2>
+    <p>下面用简化的短时傅里叶画同一段 chirp。拖动窗长，看亮线变细还是变糊。步长固定为窗长的 1/4。</p>
+    <div class="playground">
+      <canvas id="stft-demo" class="demo stack" width="820" height="360" aria-label="不同窗长下的 chirp 语谱图"></canvas>
+      <div class="controls">
+        <label for="win-len">窗长（点）</label>
+        <input id="win-len" type="range" min="64" max="512" step="32" value="128">
+        <output id="win-len-out" for="win-len">128</output>
+      </div>
+      <div class="actions">
+        <button type="button" id="stft-reset">恢复初始</button>
+      </div>
+      <p class="readout" id="stft-readout" aria-live="polite"></p>
+    </div>
+    <p>先停在 128：亮线较跟手。拖到 512：上下更清楚，但整条线更「拖」。这是时间分辨率和频率分辨率的交换，不是程序算错了。</p>
+
+    <h2 id="run">运行脚本</h2>
+    <p>核心是一段窗滑过去，每一帧做实数 FFT：</p>
+    <pre><code>window = np.hanning(nperseg)
+frame = y[start:start + nperseg] * window
+spectrum = np.abs(np.fft.rfft(frame))</code></pre>
+    <p>完整脚本在 <a href="code/ch08_stft.py"><code>code/ch08_stft.py</code></a>。课文里的对照图不读文件顶部的窗长。</p>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <pre class="terminal"><code>python code/ch08_stft.py</code></pre>
+      <p>终端里应出现「自检通过」，并提示短窗频率格子更粗、长窗更细。课文图是 <code>ch08_frames.png</code>、<code>ch08_chirp.png</code>、<code>ch08_vowel.png</code>、<code>ch08_compare.png</code>。<code>ch08_mine.png</code> 和 <code>ch08_mine.wav</code> 只跟随 <code>WINDOW_SAMPLES</code>。</p>
+    </div>
+    <div class="callout note">
+      <p>若终端中文是乱码，先执行 <code>chcp 65001</code>。图和 wav 照样会保存。</p>
+    </div>
+
+    <h2 id="edit">改窗长</h2>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>打开 <code>code/ch08_stft.py</code>，把 <code>WINDOW_SAMPLES = 1024</code> 改成 <code>256</code>，运行。打开 <code>ch08_mine.png</code>：亮线更跟手，频率方向更粗。</li>
+        <li>改成 <code>4096</code>，再运行。频率更细，时间方向拖影更明显。</li>
+        <li>做完改回 <code>1024</code>，再运行一次。</li>
+      </ol>
+    </div>
+    <figure>
+      <img src="assets/figures/ch08_mine.png" alt="默认窗长 1024 点时的 chirp 语谱图">
+      <figcaption>图 8-5　默认窗长 1024 点（约 23 ms）。标题里会写出当前的频率格子间距。</figcaption>
+    </figure>
+    <p>你的声音（与课文同一段 chirp，方便对照听）：</p>
+    <audio controls src="assets/audio/ch08_mine.wav"></audio>
+    <p><code>WINDOW_SAMPLES</code> 请用 64 到 8192 的整数。步长取窗长的 1/4。</p>
+
+    <h2 id="check">自测</h2>
+    <details class="quiz">
+      <summary>1. 采样率 44100 Hz，步长 882 点，大约每隔多少毫秒算一次频谱？</summary>
+      <p>882 / 44100 ≈ 0.020 秒，也就是大约 20 ms。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. 语谱图的横轴、纵轴、颜色分别表示什么？</summary>
+      <p>横轴是时间，纵轴是频率，颜色表示这一小段里该频率有多响（本篇用相对分贝上色）。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. 把窗长从 256 加到 2048，时间分辨率和频率分辨率各怎么变？</summary>
+      <p>时间分辨率变差（一帧盯住更长的时间，爬升线更拖），频率分辨率变好（Δf ≈ 采样率/窗长 变小，亮线在频率方向更细）。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>语谱图是「看」。下一篇在频谱上动手：三段均衡改变音色，再用简单的谱减法压噪声，并听清它为什么会伤到语音。</p>
+
+    <p><a href=\"09-effects.html\">第 9 篇 · 均衡与简单降噪</a></p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="07-audio.html">上一篇</a>
+      <a href="09-effects.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var INK = "#1c1915";
+      var MUTED = "#5c564c";
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+      var SR = 8000;
+      var DURATION = 1.2;
+      var F0 = 200;
+      var F1 = 2000;
+      var N = Math.floor(SR * DURATION);
+      var signal = new Float64Array(N);
+      (function makeChirp() {
+        var k = (F1 - F0) / DURATION;
+        var i;
+        for (i = 0; i < N; i++) {
+          var t = i / SR;
+          var phase = 2 * Math.PI * (F0 * t + 0.5 * k * t * t);
+          signal[i] = 0.7 * Math.sin(phase);
+        }
+      })();
+
+      function surface(canvas) {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var width = canvas.clientWidth || 640;
+        var height = canvas.clientHeight || 360;
+        var pw = Math.round(width * dpr);
+        var ph = Math.round(height * dpr);
+        if (canvas.width !== pw || canvas.height !== ph) {
+          canvas.width = pw;
+          canvas.height = ph;
+        }
+        var ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(0, 0, width, height);
+        return { ctx: ctx, width: width, height: height };
+      }
+
+      function hann(n) {
+        var w = new Float64Array(n);
+        var i;
+        for (i = 0; i < n; i++) {
+          w[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (n - 1 || 1));
+        }
+        return w;
+      }
+
+      function dftMag(frame) {
+        var n = frame.length;
+        var bins = Math.floor(n / 2) + 1;
+        var mag = new Float64Array(bins);
+        var k, t, re, im;
+        for (k = 0; k < bins; k++) {
+          re = 0;
+          im = 0;
+          for (t = 0; t < n; t++) {
+            var ang = (2 * Math.PI * k * t) / n;
+            re += frame[t] * Math.cos(ang);
+            im -= frame[t] * Math.sin(ang);
+          }
+          mag[k] = Math.sqrt(re * re + im * im);
+        }
+        return mag;
+      }
+
+      function stft(nperseg) {
+        var hop = Math.max(1, Math.floor(nperseg / 4));
+        var window = hann(nperseg);
+        var frames = [];
+        var start;
+        for (start = 0; start + nperseg <= N; start += hop) {
+          var frame = new Float64Array(nperseg);
+          var i;
+          for (i = 0; i < nperseg; i++) {
+            frame[i] = signal[start + i] * window[i];
+          }
+          frames.push(dftMag(frame));
+        }
+        return { frames: frames, hop: hop, nperseg: nperseg };
+      }
+
+      function colorFor(db) {
+        // db in [-60, 0]
+        var t = (db + 60) / 60;
+        if (t < 0) t = 0;
+        if (t > 1) t = 1;
+        var stops = [
+          [255, 253, 248],
+          [243, 228, 200],
+          [232, 184, 122],
+          [194, 77, 40],
+          [14, 107, 102],
+          [28, 25, 21]
+        ];
+        var x = t * (stops.length - 1);
+        var i = Math.floor(x);
+        var f = x - i;
+        if (i >= stops.length - 1) {
+          i = stops.length - 2;
+          f = 1;
+        }
+        var a = stops[i];
+        var b = stops[i + 1];
+        var r = Math.round(a[0] + (b[0] - a[0]) * f);
+        var g = Math.round(a[1] + (b[1] - a[1]) * f);
+        var bl = Math.round(a[2] + (b[2] - a[2]) * f);
+        return "rgb(" + r + "," + g + "," + bl + ")";
+      }
+
+      function draw() {
+        var canvas = document.getElementById("stft-demo");
+        var box = surface(canvas);
+        var ctx = box.ctx;
+        var width = box.width;
+        var height = box.height;
+        var nperseg = Number(document.getElementById("win-len").value);
+        var result = stft(nperseg);
+        var frames = result.frames;
+        var nFrames = frames.length;
+        var nBins = frames[0].length;
+        var fMax = 2500;
+        var binMax = Math.min(nBins - 1, Math.floor((fMax * nperseg) / SR));
+        var padL = 48;
+        var padR = 16;
+        var padT = 28;
+        var padB = 36;
+        var plotW = width - padL - padR;
+        var plotH = height - padT - padB;
+
+        var maxMag = 1e-12;
+        var fi, bi;
+        for (fi = 0; fi < nFrames; fi++) {
+          for (bi = 0; bi <= binMax; bi++) {
+            if (frames[fi][bi] > maxMag) maxMag = frames[fi][bi];
+          }
+        }
+
+        var cellW = plotW / Math.max(nFrames, 1);
+        var cellH = plotH / Math.max(binMax, 1);
+        for (fi = 0; fi < nFrames; fi++) {
+          for (bi = 1; bi <= binMax; bi++) {
+            var db = 20 * Math.log(Math.max(frames[fi][bi] / maxMag, 1e-12)) / Math.LN10;
+            if (db < -60) db = -60;
+            ctx.fillStyle = colorFor(db);
+            var x = padL + fi * cellW;
+            var y = padT + (binMax - bi) * cellH;
+            ctx.fillRect(x, y, Math.ceil(cellW + 0.5), Math.ceil(cellH + 0.5));
+          }
+        }
+
+        ctx.strokeStyle = INK;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(padL, padT, plotW, plotH);
+        ctx.fillStyle = MUTED;
+        ctx.font = "13px Microsoft YaHei, sans-serif";
+        ctx.textAlign = "left";
+        ctx.fillText("语谱图（网页示意）", padL, 18);
+        ctx.fillText("0 s", padL, height - 12);
+        ctx.textAlign = "right";
+        ctx.fillText(DURATION.toFixed(1) + " s", padL + plotW, height - 12);
+        ctx.save();
+        ctx.translate(14, padT + plotH / 2);
+        ctx.rotate(-Math.PI / 2);
+        ctx.textAlign = "center";
+        ctx.fillText("频率", 0, 0);
+        ctx.restore();
+
+        var ms = (1000 * nperseg / SR).toFixed(1);
+        var df = (SR / nperseg).toFixed(1);
+        document.getElementById("win-len-out").textContent = String(nperseg);
+        document.getElementById("stft-readout").textContent =
+          "窗长 " + nperseg + " 点（示意采样率 8 kHz 时约 " + ms +
+          " ms）。频率格子约 " + df + " Hz。帧数 " + nFrames +
+          "。窗越长，亮线在频率方向越细，在时间方向越拖。";
+      }
+
+      document.getElementById("win-len").addEventListener("input", draw);
+      document.getElementById("stft-reset").addEventListener("click", function () {
+        document.getElementById("win-len").value = "128";
+        draw();
+      });
+      window.addEventListener("resize", draw);
+      draw();
+    })();
+  </script>
+</body>
+</html>

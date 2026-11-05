@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 12 篇 · 视频多出来的时间轴</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        傅里叶变换 · 音视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="11-image-filter.html">第 11 篇</a>
+        <a href="12-video.html" aria-current="page">第 12 篇</a>
+        <a href="13-dct.html">第 13 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 12 篇 · 视频与时间 · 约 40 分钟</p>
+    <h1>视频多出来的时间轴</h1>
+    <p class="lede">一张照片是空间上的一张表。视频再叠一条时间：每秒摆多少张表，叫帧率。盯住画面正中那一个像素，它的亮度随时间起伏——又变回第 3 篇的一维信号，也能画频谱。</p>
+    <div class="meta">
+      <span class="pill">先读：第 1 篇、第 3 篇、第 11 篇</span>
+      <span class="pill">会得到一串帧和中心像素频谱</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#fps">帧率</a></li>
+        <li><a href="#pixel">一个像素随时间</a></li>
+        <li><a href="#synth">合成两秒：闪烁 + 光斑</a></li>
+        <li><a href="#wave">波形和频谱</a></li>
+        <li><a href="#try">在网页里改闪烁频率</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改 FLASH_HZ</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="fps">帧率</h2>
+    <p>电影常见 24 帧/秒，电视常见 25 或 30，手机录像常常 30 或 60。<strong>帧率</strong>就是每秒保存多少张完整画面。它和声音的采样率是亲戚：声音每秒记多少个振幅，视频每秒记多少张图。</p>
+    <p>同一段 5 Hz 的亮度起伏，用每秒 10 帧去采，1 秒里只有 10 个点；用 20 帧，点密一倍。帧率太低，快闪会糊成别的样子——和第 1 篇「采样太稀」是同一类事。</p>
+    <figure>
+      <img src="assets/figures/ch12_framerate.png" alt="10 帧/秒与 20 帧/秒对同一 5 Hz 亮度曲线的采样">
+      <figcaption>图 12-1　灰线是连续的 5 Hz 起伏。上图每秒 10 个点，下图每秒 20 个点。课文后面的合成视频用 20 帧/秒。</figcaption>
+    </figure>
+
+    <h2 id="pixel">一个像素随时间</h2>
+    <p>整段视频可以看成三维数据：行 × 列 × 时间。若只取出<strong>固定一行、固定一列</strong>，沿着时间排开，就得到一条一维序列——和第 3 篇的波形没有本质差别。</p>
+    <p class="formula">y[n] = 第 n 帧、中心像素的亮度</p>
+    <p>对 y[n] 做一维 FFT，横轴就是「每秒闪多少次」。全屏以 5 Hz 闪，频谱就应在 5 Hz 附近冒峰。</p>
+
+    <h2 id="synth">合成两秒：闪烁 + 光斑</h2>
+    <p>脚本不依赖摄像头，自己画约 2 秒、20 帧/秒的灰阶动画：</p>
+    <ul>
+      <li>全屏按 <strong>5 Hz</strong> 正弦明暗起伏；</li>
+      <li>另有一个亮斑在画面下方缓慢左右移动（不挡中心像素）。</li>
+    </ul>
+    <p>每一帧存成 PNG，目录在 <code>assets/figures/ch12_frames/</code>。若本机装了 pillow，还会额外写一个 gif；没装也没关系，帧序列已经够用。</p>
+    <figure>
+      <img src="assets/figures/ch12_montage.png" alt="抽帧排成的胶片条，中心有橙色十字">
+      <figcaption>图 12-2　胶片条（每隔几帧抽一张）。橙色十字标出中心像素——后面波形读的就是它。</figcaption>
+    </figure>
+    <p>也可以直接打开帧文件，或（若已生成）看动画：</p>
+    <figure>
+      <img src="assets/figures/ch12_flash.gif" alt="两秒闪烁加移动光斑的动画，若缺失请先运行脚本">
+      <figcaption>图 12-3　<code>ch12_flash.gif</code>（需要 pillow 才会生成；否则请翻帧目录里的 PNG）。</figcaption>
+    </figure>
+
+    <h2 id="wave">波形和频谱</h2>
+    <p>把每帧中心亮度连起来，得到下面这条曲线。大起大落主要来自 5 Hz 全屏闪；光斑经过中心时会再叠一点鼓包。</p>
+    <figure>
+      <img src="assets/figures/ch12_waveform.png" alt="中心像素亮度随时间的波形">
+      <figcaption>图 12-4　中心像素随时间。横轴是秒，纵轴是亮度 0–255。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch12_spectrum.png" alt="中心像素频谱，主峰在 5 Hz">
+      <figcaption>图 12-5　去掉平均值之后的频谱。橙色虚线标在 5 Hz——应对准闪烁频率。帧率 20，能分辨的最高频率是 10 Hz。</figcaption>
+    </figure>
+
+    <h2 id="try">在网页里改闪烁频率</h2>
+    <p>拖动频率，看 1 秒里亮暗交替多少次。点越密表示帧率固定为 20。</p>
+    <div class="playground">
+      <canvas id="flash-demo" class="demo" width="820" height="280" aria-label="闪烁频率与采样点"></canvas>
+      <div class="controls">
+        <label for="flash-hz">闪烁频率</label>
+        <input id="flash-hz" type="range" min="1" max="9" step="0.5" value="5">
+        <output id="flash-out" for="flash-hz">5</output>
+      </div>
+      <p class="readout" id="flash-readout" aria-live="polite"></p>
+    </div>
+
+    <h2 id="run">运行脚本</h2>
+    <p>完整脚本在 <a href="code/ch12_video.py"><code>code/ch12_video.py</code></a>。不强制安装 OpenCV；帧用 matplotlib / pillow 写 PNG。</p>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <pre class="terminal"><code>python code/ch12_video.py</code></pre>
+      <p>终端应出现「自检通过」和主峰约 5 Hz。帧在 <code>assets/figures/ch12_frames/</code>；课文图包括 <code>ch12_framerate.png</code>、<code>ch12_montage.png</code>、<code>ch12_waveform.png</code>、<code>ch12_spectrum.png</code>。你的练习输出是 <code>ch12_my_*.png</code> 与 <code>ch12_frames_mine/</code>。</p>
+    </div>
+    <div class="callout note">
+      <p>若终端中文是乱码，先执行 <code>chcp 65001</code>。可选：<code>python -m pip install pillow</code> 以生成 gif。</p>
+    </div>
+
+    <h2 id="edit">改 FLASH_HZ</h2>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>打开 <code>code/ch12_video.py</code>，把 <code>FLASH_HZ = 5.0</code> 改成 <code>2.0</code>，运行。</li>
+        <li>打开 <code>ch12_my_waveform.png</code>：2 秒里起伏应更疏。再看 <code>ch12_my_spectrum.png</code>：主峰应靠近 2 Hz。</li>
+        <li>改成 <code>8.0</code> 再跑：波形更密，频谱峰靠近 8 Hz（仍低于帧率一半 10 Hz）。</li>
+        <li>做完改回 <code>5.0</code>。</li>
+      </ol>
+    </div>
+    <figure>
+      <img src="assets/figures/ch12_my_waveform.png" alt="跟随 FLASH_HZ 的中心像素波形">
+      <figcaption>图 12-6　默认 <code>FLASH_HZ = 5</code> 时你的波形。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch12_my_spectrum.png" alt="跟随 FLASH_HZ 的中心像素频谱">
+      <figcaption>图 12-7　默认参数下你的频谱，虚线应对准 <code>FLASH_HZ</code>。</figcaption>
+    </figure>
+
+    <h2 id="check">自测</h2>
+    <details class="quiz">
+      <summary>1. 帧率 20 表示什么？它和声音采样率有什么相似？</summary>
+      <p>每秒保存 20 张完整画面。声音采样率是每秒记多少个振幅；帧率是每秒记多少张图。都是「时间上采多密」。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. 为什么盯住一个像素，就能画频谱？</summary>
+      <p>固定行列、沿时间取值，得到一维序列 y[n]。对它做 FFT，横轴就是每秒变化多少次。全屏 5 Hz 闪，主峰应在 5 Hz 附近。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. 帧率 20 时，闪烁频率为什么不宜超过 10 Hz？</summary>
+      <p>和奈奎斯特限制一样：能可靠分辨的最高频率约为帧率的一半。再高会混叠成别的频率。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>频域不只用来「看」和「滤」，还特别适合压缩：许多系数接近 0，扔掉也几乎看不出。下一篇用 8×8 的 DCT 走通 JPEG 的核心一步，并点一下 MP3 与视频压缩的直觉。</p>
+
+    <p><a href=\"13-dct.html\">第 13 篇 · 压缩为什么喜欢频域</a></p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="11-image-filter.html">上一篇</a>
+      <a href="13-dct.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+      var MUTED = "#5c564c";
+      var canvas = document.getElementById("flash-demo");
+      var slider = document.getElementById("flash-hz");
+      var out = document.getElementById("flash-out");
+      var readout = document.getElementById("flash-readout");
+      if (!canvas || !slider) return;
+      var FPS = 20;
+
+      function draw() {
+        var hz = parseFloat(slider.value);
+        out.textContent = String(hz);
+        var ctx = canvas.getContext("2d");
+        var w = canvas.width, h = canvas.height;
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(0, 0, w, h);
+
+        var padL = 48, padR = 20, padT = 28, padB = 40;
+        var plotW = w - padL - padR, plotH = h - padT - padB;
+
+        function yOf(v) { return padT + (1 - v) * plotH; }
+        function xOf(t) { return padL + t * plotW; }
+
+        ctx.strokeStyle = "#e6dccb";
+        ctx.beginPath();
+        for (var g = 0; g <= 4; g++) {
+          var gy = padT + (g / 4) * plotH;
+          ctx.moveTo(padL, gy);
+          ctx.lineTo(padL + plotW, gy);
+        }
+        ctx.stroke();
+
+        // continuous
+        ctx.strokeStyle = MUTED;
+        ctx.globalAlpha = 0.45;
+        ctx.beginPath();
+        for (var i = 0; i <= 200; i++) {
+          var t = i / 200;
+          var y = 0.5 + 0.4 * Math.sin(2 * Math.PI * hz * t);
+          var X = xOf(t), Y = yOf(y);
+          if (i === 0) ctx.moveTo(X, Y); else ctx.lineTo(X, Y);
+        }
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+
+        // samples at 20 fps over 1 s
+        ctx.strokeStyle = WAVE;
+        ctx.fillStyle = TEAL;
+        ctx.beginPath();
+        for (var n = 0; n < FPS; n++) {
+          var tt = n / FPS;
+          var yy = 0.5 + 0.4 * Math.sin(2 * Math.PI * hz * tt);
+          var Xx = xOf(tt), Yy = yOf(yy);
+          if (n === 0) ctx.moveTo(Xx, Yy); else ctx.lineTo(Xx, Yy);
+        }
+        ctx.stroke();
+        for (n = 0; n < FPS; n++) {
+          tt = n / FPS;
+          yy = 0.5 + 0.4 * Math.sin(2 * Math.PI * hz * tt);
+          ctx.beginPath();
+          ctx.arc(xOf(tt), yOf(yy), 3.2, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        ctx.fillStyle = MUTED;
+        ctx.font = "13px Microsoft YaHei, sans-serif";
+        ctx.fillText("0 s", padL, h - 14);
+        ctx.fillText("1 s", padL + plotW - 24, h - 14);
+        readout.textContent = "闪烁 " + hz + " Hz，帧率 20：1 秒里 " + FPS + " 个点，约 " + (hz) + " 个亮暗周期。";
+      }
+
+      slider.addEventListener("input", draw);
+      draw();
+    })();
+  </script>
+</body>
+</html>

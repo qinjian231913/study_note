@@ -1,0 +1,6 @@
+# 整套第 0–13 篇以这两个库为主（读写 wav 用标准库 wave）。
+# 第 12 篇若本机有 pillow，脚本还会额外写出 gif；没有也不影响 png 帧与频谱图。
+# 在「傅里叶变换」文件夹里运行：
+#   python -m pip install -r code/requirements.txt
+numpy>=1.24
+matplotlib>=3.7

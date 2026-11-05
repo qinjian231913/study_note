@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 10 篇 · 图像的二维频谱</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        傅里叶变换 · 音视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="08-stft.html">第 8 篇</a>
+        <a href="09-effects.html">第 9 篇</a>
+        <a href="10-image-fft.html" aria-current="page">第 10 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 10 篇 · 二维频率 · 约 45 分钟</p>
+    <h1>图像的二维频谱</h1>
+    <p class="lede">灰度图是一张数字矩阵。对它做二维傅里叶变换，可以想成：先对每一行做一维变换，再对每一列做。竖条纹、横条纹、斜条纹在频谱中央留下的亮点方向不同——方向和条纹「变化」的方向一致。</p>
+    <div class="meta">
+      <span class="pill">先读：第 3 篇、第 5 篇</span>
+      <span class="pill">会看到三种条纹的频谱</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#matrix">图像是矩阵</a></li>
+        <li><a href="#fft2">fft2 与 fftshift</a></li>
+        <li><a href="#stripes">三种条纹</a></li>
+        <li><a href="#read">怎么读亮点</a></li>
+        <li><a href="#try">在网页里改条纹次数</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改条纹次数</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="matrix">图像是矩阵</h2>
+    <p>第 1 篇写过：灰度图就是每个像素一个 0 到 1（或 0 到 255）的数。排成矩形，就是二维数组。对声音做 FFT，是在一串数上找「沿时间」的振动；对图像做二维 DFT，是找「沿左右」和「沿上下」的振动。</p>
+    <figure>
+      <img src="assets/figures/ch10_matrix.png" alt="4×4 灰度矩阵，旁注二维 DFT 先按行再按列">
+      <figcaption>图 10-1　左：一小块矩阵，格子里写着灰度值。右：二维 DFT 的白话步骤，以及代码里的 <code>fft2</code> / <code>fftshift</code>。</figcaption>
+    </figure>
+    <p class="formula">F = fftshift(fft2(image))</p>
+    <p><code>numpy.fft.fft2</code> 一次做完行与列。<code>fftshift</code> 把代表平均亮度的直流分量从四角挪到画面正中，方便人眼阅读。</p>
+
+    <h2 id="fft2">fft2 与 fftshift</h2>
+    <p>不做 <code>fftshift</code> 时，最亮的直流点贴在四个角上，对称的频谱被撕成四块。挪到中央之后，离中心越远，表示空间频率越高（条纹越密）。</p>
+    <figure>
+      <img src="assets/figures/ch10_fftshift.png" alt="竖条纹原图、fft2 后直流在四角、fftshift 后直流在中央">
+      <figcaption>图 10-2　左：竖条纹。中：直接看 |fft2|，能量堆在角上。右：fftshift 之后，直流到中央，两侧亮点表示左右方向的频率。</figcaption>
+    </figure>
+
+    <h2 id="stripes">三种条纹</h2>
+    <p>用余弦画出三种合成图，整幅各重复 8 次：</p>
+    <ul>
+      <li><strong>竖条纹</strong>：灰度沿水平方向变 → 频谱亮点落在水平轴上。</li>
+      <li><strong>横条纹</strong>：灰度沿竖直方向变 → 亮点落在竖直轴上。</li>
+      <li><strong>斜条纹</strong>：沿对角变化 → 亮点落在对角方向。</li>
+    </ul>
+    <figure>
+      <img src="assets/figures/ch10_stripes.png" alt="竖、横、斜三种条纹及其二维频谱">
+      <figcaption>图 10-3　左列是图像，右列是幅度谱（分贝）。青色十字标出中央直流。亮点离中心的距离约等于整幅图里的重复次数（在 256×256 图上，8 次对应大约 8 个像素远）。</figcaption>
+    </figure>
+
+    <h2 id="read">怎么读亮点</h2>
+    <p>记住一句：<strong>频谱亮点指出「图像在哪个方向上发生变化」</strong>。竖条纹左右黑白交替，变化方向是水平的，所以亮点在水平轴；横条纹上下交替，亮点在竖直轴。条纹越密，亮点离中央越远。</p>
+    <p>真实照片的频谱通常是中央一团亮、向外变暗：平滑区域贡献低频，边缘和纹理贡献高频。下一篇会在这些频率上动手做模糊、锐化和去条纹。</p>
+
+    <h2 id="try">在网页里改条纹次数</h2>
+    <p>拖动重复次数，看竖条纹变密时，两侧亮点如何离开中央。画布用简化的一维示意叠在二维格子上，帮助建立「次数 ↔ 距离」的直觉。</p>
+    <div class="playground">
+      <canvas id="stripe-demo" class="demo stack" width="820" height="360" aria-label="竖条纹次数与频谱亮点距离"></canvas>
+      <div class="controls">
+        <label for="cycles">整幅重复次数</label>
+        <input id="cycles" type="range" min="2" max="24" step="1" value="8">
+        <output id="cycles-out" for="cycles">8</output>
+      </div>
+      <div class="actions">
+        <button type="button" id="stripe-reset">恢复初始</button>
+      </div>
+      <p class="readout" id="stripe-readout" aria-live="polite"></p>
+    </div>
+
+    <h2 id="run">运行脚本</h2>
+    <p>生成竖条纹并做二维频谱，可以写成：</p>
+    <pre><code>x = np.arange(size)
+image = 0.5 + 0.5 * np.cos(2 * np.pi * cycles * x / size)
+image = np.tile(image, (size, 1))
+spec = np.fft.fftshift(np.fft.fft2(image))</code></pre>
+    <p>完整脚本在 <a href="code/ch10_image_fft.py"><code>code/ch10_image_fft.py</code></a>。课文里的 8 次条纹图不读文件顶部的次数。</p>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <pre class="terminal"><code>python code/ch10_image_fft.py</code></pre>
+      <p>终端里应出现「自检通过」，并打印三种条纹峰值相对中央的偏移。课文图是 <code>ch10_matrix.png</code>、<code>ch10_fftshift.png</code>、<code>ch10_stripes.png</code>。<code>ch10_mine.png</code> 只跟随 <code>STRIPE_CYCLES</code>。</p>
+    </div>
+    <div class="callout note">
+      <p>若终端中文是乱码，先执行 <code>chcp 65001</code>。图片照样会保存。本篇不需要 OpenCV。</p>
+    </div>
+
+    <h2 id="edit">改条纹次数</h2>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>打开 <code>code/ch10_image_fft.py</code>，把 <code>STRIPE_CYCLES = 8</code> 改成 <code>4</code>，运行。打开 <code>ch10_mine.png</code>：条纹更疏，两侧亮点更靠近中央。</li>
+        <li>改成 <code>20</code>，再运行。条纹更密，亮点离中央更远。</li>
+        <li>做完改回 <code>8</code>，再运行一次。</li>
+      </ol>
+    </div>
+    <figure>
+      <img src="assets/figures/ch10_mine.png" alt="按 STRIPE_CYCLES 生成的竖条纹及其频谱">
+      <figcaption>图 10-4　你的竖条纹。标题里的次数来自 <code>STRIPE_CYCLES</code>。</figcaption>
+    </figure>
+    <p><code>STRIPE_CYCLES</code> 请用 2 到 40 的整数。</p>
+
+    <h2 id="check">自测</h2>
+    <details class="quiz">
+      <summary>1. 二维 DFT 用白话怎么分两步做？代码里哪一行一次做完？</summary>
+      <p>先对每一行做一维变换，再对每一列做。代码里是 <code>numpy.fft.fft2(image)</code>。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. fftshift 把什么挪到了画面中央？</summary>
+      <p>把直流分量（平均亮度，频谱里通常最亮的那一点）从四角挪到中央，方便看出低频在中间、高频在外围。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. 竖条纹和横条纹的频谱亮点分别在哪？条纹变密时亮点怎么动？</summary>
+      <p>竖条纹亮点在水平轴上，横条纹在竖直轴上。条纹变密，亮点离中央更远。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>会看之后就要会改。下一篇在二维频谱上削弱高频做模糊、抬高频做锐化，并试着挖掉条纹对应的那对亮点。</p>
+
+    <p><a href=\"11-image-filter.html\">第 11 篇 · 在频率上改照片</a></p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="09-effects.html">上一篇</a>
+      <a href="11-image-filter.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var INK = "#1c1915";
+      var MUTED = "#5c564c";
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+      var SIZE = 96;
+
+      function surface(canvas) {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var width = canvas.clientWidth || 640;
+        var height = canvas.clientHeight || 360;
+        var pw = Math.round(width * dpr);
+        var ph = Math.round(height * dpr);
+        if (canvas.width !== pw || canvas.height !== ph) {
+          canvas.width = pw;
+          canvas.height = ph;
+        }
+        var ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(0, 0, width, height);
+        return { ctx: ctx, width: width, height: height };
+      }
+
+      function draw() {
+        var canvas = document.getElementById("stripe-demo");
+        var box = surface(canvas);
+        var ctx = box.ctx;
+        var width = box.width;
+        var height = box.height;
+        var cycles = Number(document.getElementById("cycles").value);
+        var pad = 24;
+        var gap = 28;
+        var side = Math.min(height - pad * 2, (width - pad * 2 - gap) / 2);
+        var left = pad;
+        var top = (height - side) / 2;
+        var right = pad + side + gap;
+
+        var cell = side / SIZE;
+        var x, y, v, px, py;
+        for (y = 0; y < SIZE; y++) {
+          for (x = 0; x < SIZE; x++) {
+            v = 0.5 + 0.5 * Math.cos((2 * Math.PI * cycles * x) / SIZE);
+            var g = Math.round(255 * v);
+            ctx.fillStyle = "rgb(" + g + "," + g + "," + g + ")";
+            ctx.fillRect(left + x * cell, top + y * cell, cell + 0.5, cell + 0.5);
+          }
+        }
+        ctx.strokeStyle = INK;
+        ctx.strokeRect(left, top, side, side);
+
+        // spectrum panel
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(right, top, side, side);
+        ctx.strokeStyle = INK;
+        ctx.strokeRect(right, top, side, side);
+        var cx = right + side / 2;
+        var cy = top + side / 2;
+        var scale = side / (SIZE * 1.15);
+        // soft background glow
+        var grd = ctx.createRadialGradient(cx, cy, 2, cx, cy, side * 0.45);
+        grd.addColorStop(0, "rgba(194,77,40,0.35)");
+        grd.addColorStop(1, "rgba(255,253,248,0)");
+        ctx.fillStyle = grd;
+        ctx.beginPath();
+        ctx.arc(cx, cy, side * 0.45, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.strokeStyle = "#e6dccb";
+        ctx.beginPath();
+        ctx.moveTo(right + 8, cy);
+        ctx.lineTo(right + side - 8, cy);
+        ctx.moveTo(cx, top + 8);
+        ctx.lineTo(cx, top + side - 8);
+        ctx.stroke();
+
+        var offset = cycles * scale * (SIZE / 16);
+        // map cycles to pixel distance similar to DFT bins
+        offset = (cycles / SIZE) * side;
+        ctx.fillStyle = WAVE;
+        ctx.beginPath();
+        ctx.arc(cx - offset, cy, 5, 0, Math.PI * 2);
+        ctx.arc(cx + offset, cy, 5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = TEAL;
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.moveTo(cx - 7, cy);
+        ctx.lineTo(cx + 7, cy);
+        ctx.moveTo(cx, cy - 7);
+        ctx.lineTo(cx, cy + 7);
+        ctx.stroke();
+
+        ctx.fillStyle = MUTED;
+        ctx.font = "13px Microsoft YaHei, sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("竖条纹", left + side / 2, top - 8);
+        ctx.fillText("频谱示意", right + side / 2, top - 8);
+
+        document.getElementById("cycles-out").textContent = String(cycles);
+        document.getElementById("stripe-readout").textContent =
+          "整幅重复 " + cycles + " 次。条纹更密时，水平轴上那对亮点离中央更远。" +
+          "把同一个整数写进 STRIPE_CYCLES 并运行脚本，可得到精确的 fft2 图。";
+      }
+
+      document.getElementById("cycles").addEventListener("input", draw);
+      document.getElementById("stripe-reset").addEventListener("click", function () {
+        document.getElementById("cycles").value = "8";
+        draw();
+      });
+      window.addEventListener("resize", draw);
+      draw();
+    })();
+  </script>
+</body>
+</html>

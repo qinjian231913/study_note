@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 0 篇 · 环境与第一张正弦波</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        傅里叶变换 · 音视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="00-sine.html" aria-current="page">第 0 篇</a>
+        <a href="01-sampling.html">第 1 篇</a>
+        <a href="02-sum.html">第 2 篇</a>
+        <a href="03-spectrum.html">第 3 篇</a>
+        <a href="04-series.html">第 4 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 0 篇 · 准备 · 约 40 分钟</p>
+    <h1>环境与第一张正弦波</h1>
+    <p class="lede">这一篇把一条正弦波画出来，并给三个可以拧的量起名字：振幅、频率、相位。电脑里的声音和图像，后面都会回到这种上下来回。</p>
+    <div class="meta">
+      <span class="pill">先读：无</span>
+      <span class="pill">下一篇需要本篇</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#look">先看一条波</a></li>
+        <li><a href="#circle">圆上的高度</a></li>
+        <li><a href="#three">振幅、频率、相位</a></li>
+        <li><a href="#formula">写成一行公式</a></li>
+        <li><a href="#try">在网页里改参数</a></li>
+        <li><a href="#run">安装并运行脚本</a></li>
+        <li><a href="#edit">改一行再运行</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="look">先看一条波</h2>
+    <p>横轴是时间，单位秒。纵轴先就叫强弱：它是一个随时间起伏的数。做声音时，这个数对应空气压强的变化；做图像时，类似的数会变成亮度。这一篇只看图。</p>
+    <p>下面这条曲线用 1 秒完成一次完整的起伏：从中线升到最高，再降到最低，然后回到中线。最高点叫波峰，最低点叫波谷。这一次完整起伏叫一个来回，也叫一个周期。</p>
+
+    <figure>
+      <svg viewBox="0 0 680 250" role="img" aria-labelledby="sineTitle sineDesc">
+        <title id="sineTitle">一秒内完成一次起伏的正弦波</title>
+        <desc id="sineDesc">横轴从 0 到 1 秒。曲线从中线升到波峰，经过中线降到波谷，再回到中线。</desc>
+        <line x1="56" y1="44" x2="640" y2="44" stroke="#efe6d8" stroke-width="1"/>
+        <line x1="56" y1="192" x2="640" y2="192" stroke="#efe6d8" stroke-width="1"/>
+        <line x1="56" y1="28" x2="56" y2="210" stroke="#1c1915" stroke-width="1.4"/>
+        <line x1="56" y1="118" x2="640" y2="118" stroke="#1c1915" stroke-width="1.4"/>
+        <polyline fill="none" stroke="#c24d28" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" points="56.0,118.0 63.0,112.2 70.0,106.4 77.0,100.7 84.0,95.1 91.0,89.7 98.0,84.4 105.0,79.3 112.0,74.5 119.0,69.9 126.0,65.7 133.0,61.7 140.0,58.1 147.0,54.9 154.0,52.1 161.0,49.6 168.0,47.6 175.0,46.0 182.0,44.9 189.0,44.2 196.0,44.0 203.0,44.2 210.0,44.9 217.0,46.0 224.0,47.6 231.0,49.6 238.0,52.1 245.0,54.9 252.0,58.1 259.0,61.7 266.0,65.7 273.0,69.9 280.0,74.5 287.0,79.3 294.0,84.4 301.0,89.7 308.0,95.1 315.0,100.7 322.0,106.4 329.0,112.2 336.0,118.0 343.0,123.8 350.0,129.6 357.0,135.3 364.0,140.9 371.0,146.3 378.0,151.6 385.0,156.7 392.0,161.5 399.0,166.1 406.0,170.3 413.0,174.3 420.0,177.9 427.0,181.1 434.0,183.9 441.0,186.4 448.0,188.4 455.0,190.0 462.0,191.1 469.0,191.8 476.0,192.0 483.0,191.8 490.0,191.1 497.0,190.0 504.0,188.4 511.0,186.4 518.0,183.9 525.0,181.1 532.0,177.9 539.0,174.3 546.0,170.3 553.0,166.1 560.0,161.5 567.0,156.7 574.0,151.6 581.0,146.3 588.0,140.9 595.0,135.3 602.0,129.6 609.0,123.8 616.0,118.0"/>
+        <circle cx="196" cy="44" r="4.5" fill="#c24d28"/>
+        <circle cx="476" cy="192" r="4.5" fill="#c24d28"/>
+        <text x="168" y="30" fill="#c24d28" font-size="15" font-family="Microsoft YaHei, sans-serif">波峰</text>
+        <text x="452" y="222" fill="#c24d28" font-size="15" font-family="Microsoft YaHei, sans-serif">波谷</text>
+        <text x="348" y="108" fill="#5c564c" font-size="14" font-family="Microsoft YaHei, sans-serif">中线</text>
+        <text x="18" y="24" fill="#5c564c" font-size="14" font-family="Microsoft YaHei, sans-serif">强弱 y</text>
+        <text x="48" y="206" fill="#5c564c" font-size="14" font-family="Microsoft YaHei, sans-serif">0</text>
+        <text x="600" y="206" fill="#5c564c" font-size="14" font-family="Microsoft YaHei, sans-serif">1 秒</text>
+        <text x="300" y="242" fill="#1c1915" font-size="15" font-family="Microsoft YaHei, sans-serif">时间 t</text>
+      </svg>
+      <figcaption>图 0-1　1 秒里的一次完整来回。波峰在 0.25 秒，波谷在 0.75 秒，起点和终点都在中线上。</figcaption>
+    </figure>
+
+    <h2 id="circle">圆上的高度</h2>
+    <p>这条曲线有一个很具体的来历。想象一个点沿着圆逆时针转。我们只记录它的高度，再把高度按时间画到右边，就得到正弦波。</p>
+    <p>点从圆的最右侧出发，高度是 0，接下来向上走。转完整整一圈，右边的波也完成一次来回。这一圈用 1 秒，所以频率是 1 Hz：赫兹，每秒一次。</p>
+
+    <div class="playground">
+      <canvas id="circle-demo" class="demo tall" width="820" height="340" aria-label="圆上一点的高度画成正弦波"></canvas>
+      <div class="controls">
+        <label for="circle-scrub">时间 t</label>
+        <input id="circle-scrub" type="range" min="0" max="1000" value="0" step="1">
+        <output id="circle-time" for="circle-scrub">0.00 秒</output>
+      </div>
+      <div class="actions">
+        <button type="button" class="primary" id="circle-play" aria-pressed="false">播放</button>
+        <button type="button" id="circle-reset">回到起点</button>
+      </div>
+      <p class="readout" id="circle-readout" aria-live="polite"></p>
+    </div>
+    <p>滑块可以用鼠标拖，也可以先点中它，再用键盘左右方向键。播放时，一圈大约用 4 秒放完，方便看清；图上写的时间仍然是 0 到 1 秒。</p>
+
+    <h2 id="three">振幅、频率、相位</h2>
+    <p>一条正弦由三个数决定。下面先看脚本已经画好的图，第 <a href="#run">安装并运行</a> 一节会把同一批图再生成一次。</p>
+
+    <h3>振幅：离中线有多远</h3>
+    <p>振幅 A 是波峰离开中线的距离。A = 1 时，波峰的强弱是 1，波谷是 −1。振幅改变高度，不改变 1 秒里的来回次数。</p>
+    <figure>
+      <img src="assets/figures/ch00_basic.png" alt="1 Hz 正弦波，标出振幅 1 和周期 1 秒">
+      <figcaption>图 0-2　竖的双箭头是振幅。底部的双箭头是一个周期。这里周期正好是 1 秒，频率就是 1 Hz。二者的关系是 T = 1 / f。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch00_amplitude.png" alt="两条 2 Hz 正弦，振幅分别是 1 和 0.5">
+      <figcaption>图 0-3　两条波都是 2 Hz，所以它们同时经过中线。橙色振幅是 1，青色振幅是 0.5，青色的波峰只有橙色的一半高。</figcaption>
+    </figure>
+
+    <h3>频率：1 秒里来回几次</h3>
+    <p>频率 f 是 1 秒钟完成的来回次数，单位 Hz。周期 T 是完成一次来回要用的秒数，T = 1 / f。频率改成 3，1 秒里就有 3 次来回，每次大约 0.33 秒。</p>
+    <figure>
+      <img src="assets/figures/ch00_freq.png" alt="1 Hz 与 3 Hz 的正弦画在同一秒里">
+      <figcaption>图 0-4　青色 1 秒来回 1 次，橙色来回 3 次。虚线标在 0.25 秒：青色在波峰，橙色已经到了波谷。底部括号是橙色的一个周期。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>先记一个后面要用的频率：440 Hz。它的周期是 1/440 秒，大约 0.00227 秒，也就是 2.27 毫秒。第 1 篇会用它做一段能播放的声音。440 Hz 是乐队对音时常用的标准音 A。</p>
+    </div>
+
+    <h3>相位：起步时已经走到哪里</h3>
+    <p>相位 φ 是起步时多出来的角度，单位弧度。φ = 0 时，t = 0 的强弱是 0，随后向上。φ = π/2 时，t = 0 已经在波峰。两条波可以一样快，只是起步位置不同。</p>
+    <p>弧度是量角度的一把尺子。暂时记住三个刻度就够：一整圈 = 2π，半圈 = π，四分之一圈 = π/2。π 大约是 3.1416，所以 π/2 大约是 1.5708。</p>
+    <figure>
+      <img src="assets/figures/ch00_phase.png" alt="相位 0 和相位 π/2 的两条 1 Hz 正弦">
+      <figcaption>图 0-5　看最左边。橙色从中线出发，青色从最高点出发。到了 0.5 秒，青色到达最低点。两条都是 1 Hz。</figcaption>
+    </figure>
+
+    <h2 id="formula">写成一行公式</h2>
+    <p>把三个量放进同一行，就是这一篇的全部计算：</p>
+    <p class="formula">y = A · sin(2π f t + φ)</p>
+    <p>读出来是：y 等于 A 乘以 sin，括号里是 2π 乘 f 乘 t，再加 φ。</p>
+    <div class="table-scroll">
+      <table>
+        <caption>表 0-1　公式里的每个符号</caption>
+        <thead>
+          <tr><th>符号</th><th>名称</th><th>在图里的意思</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>y</td><td>强弱</td><td>这一时刻的高度</td></tr>
+          <tr><td>A</td><td>振幅</td><td>波峰离开中线的距离</td></tr>
+          <tr><td>f</td><td>频率</td><td>每秒来回几次，单位 Hz</td></tr>
+          <tr><td>t</td><td>时间</td><td>从 0 开始过了多少秒</td></tr>
+          <tr><td>φ</td><td>相位</td><td>起步时多转过的角度，单位弧度</td></tr>
+          <tr><td>sin</td><td>正弦</td><td>把角度变成 −1 到 1 之间的高度</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>sin 要的是角度。一整圈记作 2π。f 是每秒的圈数，t 是过了多少秒，f × t 就是一共转了多少圈。再乘 2π，就换成正弦要的角度。φ 是还没开始计时就已经多转的那一截。</p>
+
+    <h3>三个算例</h3>
+    <p><strong>算例 1。</strong> A = 1，f = 1，φ = 0，t = 0.25 秒。括号里的角度 = 2π × 1 × 0.25 = π/2。sin(π/2) = 1，所以 y = 1。这是图 0-2 的波峰，也是圆上的最高点。</p>
+    <p><strong>算例 2。</strong> 只把 f 改成 3，t 仍是 0.25 秒。角度 = 2π × 3 × 0.25 = 3π/2。sin(3π/2) = −1，所以 y = −1。图 0-4 里，0.25 秒的虚线压在橙色波谷上。</p>
+    <p><strong>算例 3。</strong> A = 0.5，f = 2，φ = 0，t = 0.125 秒。角度 = 2π × 2 × 0.125 = π/2。sin 得到 1，再乘振幅，y = 0.5。这是图 0-3 里青色波的第一个波峰。</p>
+
+    <h2 id="try">在网页里改参数</h2>
+    <p>下面这张图不需要安装 Python。纵轴固定在 −1.7 到 1.7，所以你能看见高度真的变了。浅色竖线从 t = 0 起，每隔一个周期画一条。</p>
+    <div class="playground">
+      <canvas id="tune-demo" class="demo" width="820" height="280" aria-label="可调节振幅、频率和相位的正弦波"></canvas>
+      <div class="controls">
+        <label for="amp">振幅 A</label>
+        <input id="amp" type="range" min="0.2" max="1.5" step="0.1" value="1">
+        <output id="amp-out" for="amp">1.0</output>
+        <label for="freq">频率 f</label>
+        <input id="freq" type="range" min="1" max="6" step="1" value="1">
+        <output id="freq-out" for="freq">1 Hz</output>
+        <label for="phase">相位 φ</label>
+        <input id="phase" type="range" min="0" max="360" step="15" value="0">
+        <output id="phase-out" for="phase">0°</output>
+      </div>
+      <div class="actions">
+        <button type="button" id="tune-reset">恢复初始</button>
+      </div>
+      <p class="readout" id="tune-readout" aria-live="polite"></p>
+    </div>
+    <p>建议按这个顺序拖：先只动频率，数一数 1 秒里有几个来回；再只动振幅，确认来回次数不变；最后把相位拨到 90°，看起点是不是到了波峰。90° 就是 π/2。</p>
+
+    <h2 id="run">安装并运行脚本</h2>
+    <p>网页上的图关掉之后就没了。脚本把同一条公式算完，存成图片。真正计算正弦的只有一行，其余代码负责把课文对照图和你的图分别保存。</p>
+    <pre><code>import numpy as np
+
+A = 1.0      # 振幅
+f = 1.0      # 频率，单位 Hz
+phi = 0.0    # 相位，单位弧度
+
+t = np.linspace(0, 1, 2000)   # 0 到 1 秒取 2000 个点，只为把线画顺
+y = A * np.sin(2 * np.pi * f * t + phi)</code></pre>
+    <p>这 2000 个点是为了让线条看起来光滑。它还不是声音文件的采样率。采样率决定文件里真正保存多少个数，第 1 篇再写进 wav。</p>
+
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <p>如果电脑上还没有 Python，到 <a href="https://www.python.org/downloads/">python.org</a> 安装，安装时勾选 “Add python.exe to PATH”。然后打开终端，进入本文件夹（里面能看到 <code>index.html</code>），运行：</p>
+      <pre class="terminal"><code>python -m pip install -r code/requirements.txt
+python code/ch00_sine.py</code></pre>
+      <p>若提示找不到 <code>python</code>，把命令里的 <code>python</code> 改成 <code>py -3</code>。运行成功后，终端里会出现「自检通过」，并在 <code>assets/figures/</code> 写下这些图：</p>
+      <ul>
+        <li><code>ch00_basic.png</code>、<code>ch00_freq.png</code>、<code>ch00_amplitude.png</code>、<code>ch00_phase.png</code>：课文对照图，参数是固定的。</li>
+        <li><code>ch00_my_sine.png</code>：只跟随脚本顶部「改这里」的四个数。</li>
+      </ul>
+    </div>
+
+    <div class="callout note">
+      <h3>常见情况</h3>
+      <ul>
+        <li>提示 <code>No module named numpy</code>：再运行一次上面的 <code>pip install</code>。</li>
+        <li>终端里的中文是乱码：先执行 <code>chcp 65001</code>，再运行脚本。图片照样会保存。</li>
+        <li>图上的中文变成方框：看终端打印的「作图字体」。正常应是 Microsoft YaHei。</li>
+      </ul>
+    </div>
+
+    <h2 id="edit">改一行再运行</h2>
+    <p>用编辑器打开 <a href="code/ch00_sine.py"><code>code/ch00_sine.py</code></a>。顶部「改这里」只影响 <code>ch00_my_sine.png</code>。课文那四张图每次仍按固定参数重画，方便和正文对。</p>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>把 <code>FREQUENCY = 1.0</code> 改成 <code>3.0</code>，保存，再运行脚本。打开 <code>assets/figures/ch00_my_sine.png</code>。1 秒里应有 3 个来回，起点仍在中线。这和算例 2、图 0-4 的橙色曲线是同一件事。</li>
+        <li>把频率改回 <code>1.0</code>，把 <code>PHASE = 0.0</code> 改成 <code>np.pi / 2</code>，再运行。图应从最高点出发，对应图 0-5 的青色曲线。</li>
+        <li>可选：把 <code>DURATION = 1.0</code> 改成 <code>2.0</code>。横轴变成 2 秒。频率仍是 1 Hz 时，图上会有 2 个来回。</li>
+      </ol>
+    </div>
+    <p>三个量各管一件事。频率管 1 秒里的来回次数。振幅管波峰离中线的距离。相位管 t = 0 时波已经走到的位置。</p>
+
+    <h2 id="check">自测</h2>
+    <p>先自己答，再展开。</p>
+    <details class="quiz">
+      <summary>1. 频率设为 4 Hz 时，1 秒里有几个完整来回？周期是多少秒？</summary>
+      <p>4 个来回。周期 T = 1/4 = 0.25 秒。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. 振幅从 1 改成 0.3，频率保持 2 Hz。来回次数是多少？波峰的 y 是多少？</summary>
+      <p>来回次数仍是 2，由频率决定。波峰 y = 0.3，波谷 y = −0.3。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. A = 1，f = 1，φ = π/2。t = 0 时 y 是多少？t = 0.5 秒时 y 是多少？</summary>
+      <p>t = 0 时，角度是 π/2，y = 1。t = 0.5 秒时，角度是 2π × 0.5 + π/2 = 3π/2，y = −1。半秒时，圆上的点在最低处。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>这一篇的曲线看起来连绵不断。下一篇会看到：文件里保存的是一串按时间排好的数。我们用这串数写一段 440 Hz 的声音，再写一张由亮度数字组成的图。</p>
+    <p><a href="01-sampling.html">第 1 篇 · 声音和图像都是一串数字</a></p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="index.html">目录</a>
+      <a href="01-sampling.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var INK = "#1c1915";
+      var MUTED = "#5c564c";
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+      var progress = 0;
+      var playing = false;
+      var lastTime = null;
+
+      function surface(canvas) {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var width = canvas.clientWidth || 640;
+        var height = canvas.clientHeight || 300;
+        var pw = Math.round(width * dpr);
+        var ph = Math.round(height * dpr);
+        if (canvas.width !== pw || canvas.height !== ph) {
+          canvas.width = pw;
+          canvas.height = ph;
+        }
+        var ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(0, 0, width, height);
+        return { ctx: ctx, width: width, height: height };
+      }
+
+      function drawCircle(p) {
+        var canvas = document.getElementById("circle-demo");
+        var box = surface(canvas);
+        var ctx = box.ctx;
+        var width = box.width;
+        var height = box.height;
+        var wide = width >= 640;
+        var amp = wide ? Math.min(78, height * 0.26) : Math.min(64, width * 0.16);
+        var cx;
+        var cy;
+        var plotLeft;
+        var plotRight;
+        var plotBottomLimit;
+        if (wide) {
+          cx = 28 + amp;
+          cy = height * 0.44;
+          plotLeft = cx + amp + 78;
+          plotRight = width - 16;
+          plotBottomLimit = height - 8;
+        } else {
+          cx = width / 2;
+          cy = 18 + amp;
+          plotLeft = 42;
+          plotRight = width - 12;
+          plotBottomLimit = height - 8;
+        }
+        var plotAmp = amp;
+        var plotCy = wide ? cy : cy + amp + 48 + plotAmp;
+        if (!wide && plotCy + plotAmp > height - 36) {
+          plotAmp = Math.max(36, (height - 36 - (cy + amp + 48)) / 2);
+          plotCy = cy + amp + 48 + plotAmp;
+        }
+
+        function yPix(y) { return plotCy - y * plotAmp; }
+        function xPix(t) { return plotLeft + t * (plotRight - plotLeft); }
+
+        ctx.strokeStyle = TEAL;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(cx, cy, amp, 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.strokeStyle = "#e6dccb";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(cx - amp, cy);
+        ctx.lineTo(cx + amp, cy);
+        ctx.moveTo(cx, cy - amp);
+        ctx.lineTo(cx, cy + amp);
+        ctx.stroke();
+
+        var theta = p * Math.PI * 2;
+        var px = cx + amp * Math.cos(theta);
+        var py = cy - amp * Math.sin(theta);
+        ctx.strokeStyle = MUTED;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(px, py);
+        ctx.stroke();
+        ctx.fillStyle = WAVE;
+        ctx.beginPath();
+        ctx.arc(px, py, 6, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.strokeStyle = INK;
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(plotLeft, yPix(0));
+        ctx.lineTo(plotRight, yPix(0));
+        ctx.moveTo(plotLeft, yPix(1));
+        ctx.lineTo(plotLeft, yPix(-1));
+        ctx.stroke();
+
+        function strokeSine(from, to, color, lineWidth) {
+          ctx.beginPath();
+          ctx.strokeStyle = color;
+          ctx.lineWidth = lineWidth;
+          var steps = 240;
+          var i;
+          for (i = 0; i <= steps; i++) {
+            var t = from + (to - from) * (i / steps);
+            var x = xPix(t);
+            var y = yPix(Math.sin(Math.PI * 2 * t));
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          }
+          ctx.stroke();
+        }
+        strokeSine(0, 1, "#e4d3c8", 2);
+        if (p > 0.001) strokeSine(0, p, WAVE, 2.6);
+
+        var yNow = Math.sin(Math.PI * 2 * p);
+        var sx = xPix(p);
+        var sy = yPix(yNow);
+        if (wide) {
+          ctx.setLineDash([4, 4]);
+          ctx.strokeStyle = WAVE;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(px, py);
+          ctx.lineTo(sx, sy);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+        ctx.fillStyle = "#fffdf8";
+        ctx.beginPath();
+        ctx.arc(sx, sy, 6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = WAVE;
+        ctx.beginPath();
+        ctx.arc(sx, sy, 4, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = MUTED;
+        ctx.font = "13px Microsoft YaHei, sans-serif";
+        ctx.fillText("1", plotLeft - 18, yPix(1) + 4);
+        ctx.fillText("-1", plotLeft - 28, yPix(-1) + 4);
+        var labelY = Math.min(plotBottomLimit - 4, yPix(-1) + 26);
+        ctx.fillText("0 秒", plotLeft, labelY);
+        ctx.fillText("1 秒", plotRight - 36, labelY);
+        ctx.fillText("逆时针", cx - 22, cy + amp + 18);
+
+        document.getElementById("circle-time").textContent = p.toFixed(2) + " 秒";
+        document.getElementById("circle-readout").textContent =
+          "t = " + p.toFixed(2) + " 秒，圆转了 " + Math.round(p * 360) + "°，高度 y = " + yNow.toFixed(2) +
+          "。频率固定为 1 Hz：圆转完一圈，右边的波完成一次来回。点从圆的最右侧出发，所以起点高度是 0，接着向上。";
+      }
+
+      function phaseLabel(deg) {
+        if (deg === 0) return "0°（0）";
+        if (deg === 90) return "90°（π/2）";
+        if (deg === 180) return "180°（π）";
+        if (deg === 270) return "270°（3π/2）";
+        if (deg === 360) return "360°（2π）";
+        return deg + "°";
+      }
+
+      function drawTune() {
+        var canvas = document.getElementById("tune-demo");
+        var box = surface(canvas);
+        var ctx = box.ctx;
+        var width = box.width;
+        var height = box.height;
+        var A = Number(document.getElementById("amp").value);
+        var f = Number(document.getElementById("freq").value);
+        var deg = Number(document.getElementById("phase").value);
+        var phase = deg * Math.PI / 180;
+        var padL = 46;
+        var padR = 16;
+        var padT = 16;
+        var padB = 32;
+        var yMax = 1.7;
+
+        function xPix(t) { return padL + t * (width - padL - padR); }
+        function yPix(y) {
+          return padT + (1 - (y + yMax) / (2 * yMax)) * (height - padT - padB);
+        }
+
+        ctx.strokeStyle = "#c4b7a4";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(padL, yPix(0));
+        ctx.lineTo(width - padR, yPix(0));
+        var k;
+        for (k = 1; k < f; k++) {
+          var vx = xPix(k / f);
+          ctx.moveTo(vx, yPix(1.55));
+          ctx.lineTo(vx, yPix(-1.55));
+        }
+        ctx.stroke();
+
+        ctx.setLineDash([4, 4]);
+        ctx.strokeStyle = WAVE;
+        ctx.beginPath();
+        ctx.moveTo(padL, yPix(A));
+        ctx.lineTo(width - padR, yPix(A));
+        ctx.moveTo(padL, yPix(-A));
+        ctx.lineTo(width - padR, yPix(-A));
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        ctx.strokeStyle = INK;
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(padL, yPix(yMax));
+        ctx.lineTo(padL, yPix(-yMax));
+        ctx.moveTo(padL, yPix(0));
+        ctx.lineTo(width - padR, yPix(0));
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.strokeStyle = WAVE;
+        ctx.lineWidth = 2.4;
+        var steps = 360;
+        var i;
+        for (i = 0; i <= steps; i++) {
+          var t = i / steps;
+          var y = A * Math.sin(Math.PI * 2 * f * t + phase);
+          var x = xPix(t);
+          var py = yPix(y);
+          if (i === 0) ctx.moveTo(x, py);
+          else ctx.lineTo(x, py);
+        }
+        ctx.stroke();
+
+        var y0 = A * Math.sin(phase);
+        ctx.fillStyle = "#fffdf8";
+        ctx.beginPath();
+        ctx.arc(xPix(0), yPix(y0), 6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = TEAL;
+        ctx.beginPath();
+        ctx.arc(xPix(0), yPix(y0), 4.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = MUTED;
+        ctx.font = "13px Microsoft YaHei, sans-serif";
+        ctx.fillText("0", padL - 4, height - 10);
+        ctx.fillText("1 秒", width - padR - 32, height - 10);
+        ctx.fillText("时间", (padL + width - padR) / 2 - 14, height - 10);
+
+        document.getElementById("amp-out").textContent = A.toFixed(1);
+        document.getElementById("freq-out").textContent = f + " Hz";
+        document.getElementById("phase-out").textContent = deg + "°";
+        var cycles = f === 1 ? "1 次完整来回" : f + " 次完整来回";
+        document.getElementById("tune-readout").textContent =
+          "A = " + A.toFixed(1) + "，f = " + f + " Hz，φ = " + phaseLabel(deg) +
+          "。这 1 秒里有 " + cycles + "，周期 T = " + (1 / f).toFixed(2) +
+          " 秒。t = 0 时 y = " + y0.toFixed(2) + "。浅色竖线按周期把时间切开。";
+      }
+
+      function loop(now) {
+        if (!playing) {
+          lastTime = null;
+          return;
+        }
+        if (lastTime !== null) {
+          progress += (now - lastTime) / 4000;
+          if (progress >= 1) progress %= 1;
+          document.getElementById("circle-scrub").value = String(Math.round(progress * 1000));
+        }
+        lastTime = now;
+        drawCircle(progress);
+        requestAnimationFrame(loop);
+      }
+
+      document.getElementById("circle-play").addEventListener("click", function () {
+        playing = !playing;
+        this.textContent = playing ? "暂停" : "播放";
+        this.setAttribute("aria-pressed", playing ? "true" : "false");
+        if (playing) requestAnimationFrame(loop);
+      });
+
+      document.getElementById("circle-reset").addEventListener("click", function () {
+        playing = false;
+        progress = 0;
+        var play = document.getElementById("circle-play");
+        play.textContent = "播放";
+        play.setAttribute("aria-pressed", "false");
+        document.getElementById("circle-scrub").value = "0";
+        drawCircle(0);
+      });
+
+      document.getElementById("circle-scrub").addEventListener("input", function () {
+        playing = false;
+        var play = document.getElementById("circle-play");
+        play.textContent = "播放";
+        play.setAttribute("aria-pressed", "false");
+        progress = Number(this.value) / 1000;
+        drawCircle(progress);
+      });
+
+      ["amp", "freq", "phase"].forEach(function (id) {
+        document.getElementById(id).addEventListener("input", drawTune);
+      });
+
+      document.getElementById("tune-reset").addEventListener("click", function () {
+        document.getElementById("amp").value = "1";
+        document.getElementById("freq").value = "1";
+        document.getElementById("phase").value = "0";
+        drawTune();
+      });
+
+      window.addEventListener("resize", function () {
+        drawCircle(progress);
+        drawTune();
+      });
+
+      drawCircle(0);
+      drawTune();
+    })();
+  </script>
+  <noscript>
+    <div class="wrap">
+      <p class="callout note">浏览器禁用了脚本时，滑块不会动。上面的静态图和 Python 脚本仍然可以阅读、运行。</p>
+    </div>
+  </noscript>
+</body>
+</html>

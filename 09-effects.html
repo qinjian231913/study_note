@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 9 篇 · 均衡与简单降噪</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        傅里叶变换 · 音视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="08-stft.html">第 8 篇</a>
+        <a href="09-effects.html" aria-current="page">第 9 篇</a>
+        <a href="10-image-fft.html">第 10 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 9 篇 · 改频谱再听回去 · 约 50 分钟</p>
+    <h1>均衡与简单降噪</h1>
+    <p class="lede">频谱不只是用来看的。这一篇在频率轴上乘不同的增益，再逆变换回波形：三段均衡改变音色；谱减法用开头半秒估计噪声——它能压噪声，也会削掉语音细节。变调只点到概念，不在本篇做完整声码器。</p>
+    <div class="meta">
+      <span class="pill">先读：第 6 篇、第 8 篇</span>
+      <span class="pill">会听到均衡和降噪</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#eq">三频段均衡</a></li>
+        <li><a href="#hear-eq">听均衡前后</a></li>
+        <li><a href="#denoise">谱减法降噪</a></li>
+        <li><a href="#damage">它为什么伤语音</a></li>
+        <li><a href="#pitch">变调只是挪格子？</a></li>
+        <li><a href="#try">在网页里调三段增益</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改三段增益</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="eq">三频段均衡</h2>
+    <p>把整段声音做一次实数 FFT，得到每个频率格子上的复数。均衡器做的事很直接：按频段乘一个实数增益，再 <code>ifft</code> 回去。</p>
+    <p class="formula">Y(f) = G(f) · X(f)　→　y = irfft(Y)</p>
+    <p>本篇用三段：</p>
+    <ul>
+      <li><strong>低频</strong>：&lt; 300 Hz</li>
+      <li><strong>中频</strong>：300–2000 Hz</li>
+      <li><strong>高频</strong>：&gt; 2000 Hz</li>
+    </ul>
+    <p>增益是线性倍数：1 表示不动，0.5 表示幅度减半，2 表示加倍。</p>
+    <figure>
+      <img src="assets/figures/ch09_eq_bands.png" alt="三频段增益曲线：低频抬高、中频压低、高频略抬">
+      <figcaption>图 9-1　课文示范用的增益形状：低 1.8、中 0.55、高 1.5。竖虚线是 300 Hz 与 2000 Hz。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch09_eq_spectrum.png" alt="均衡前后整段 FFT 幅度谱对比">
+      <figcaption>图 9-2　上图均衡前，下图均衡后。低频鼓感被抬高，中频人声感被压低，高频嘶声略亮。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch09_eq_wave.png" alt="均衡前后的时域波形">
+      <figcaption>图 9-3　时域也会变：低频变强时，波形的大起伏更显眼。细节仍以听感为准。</figcaption>
+    </figure>
+
+    <h2 id="hear-eq">听均衡前后</h2>
+    <p>均衡前：</p>
+    <audio controls src="assets/audio/ch09_eq_before.wav"></audio>
+    <p>均衡后（抬低、压中、略抬高）：</p>
+    <audio controls src="assets/audio/ch09_eq_after.wav"></audio>
+    <p>若耳机里低频变「闷而沉」、中频人声变远、齿音略亮，就对上了图 9-2。</p>
+
+    <h2 id="denoise">谱减法降噪</h2>
+    <p>假设噪声比较稳，语音有时有、有时无。最简单的估计：用开头 0.5 秒（本篇合成音里几乎只有噪声）的幅度谱当噪声模板，从整段幅度谱里减掉，相位保持原样，再逆变换。</p>
+    <p class="formula">|Y| = max(|X| − α|N|, β|X|)</p>
+    <p>α 控制多减一点还是少减一点；β 留一点地板，避免幅度被减成完全为 0。</p>
+    <figure>
+      <img src="assets/figures/ch09_denoise_spectrum.png" alt="带噪谱、噪声估计与谱减之后的幅度谱">
+      <figcaption>图 9-4　上图青色是带噪谱，灰色是开头 0.5 秒估计出的噪声。下图减去之后，660 Hz 主峰还在，细小起伏被削掉。</figcaption>
+    </figure>
+
+    <h2 id="damage">它为什么伤语音</h2>
+    <p>噪声谱不是一条完美的平线，语音也不是只占一根柱。相减时，落在噪声模板附近的语音细节会被一起削掉；减得太狠还会出现「音乐噪声」——听起来发干、有金属感或流水声。</p>
+    <figure>
+      <img src="assets/figures/ch09_denoise_wave.png" alt="带噪、谱减后与干净对照波形，标出开头噪声估计段">
+      <figcaption>图 9-5　上：带噪。中：谱减后，开头更安静，但音调周围也不再干净。下：合成时单独留下的干净音调，供对照。</figcaption>
+    </figure>
+    <p>带噪：</p>
+    <audio controls src="assets/audio/ch09_noisy.wav"></audio>
+    <p>谱减之后：</p>
+    <audio controls src="assets/audio/ch09_denoised.wav"></audio>
+    <p>对比时注意：噪声小了，音调是否也变「薄」了。</p>
+
+    <h2 id="pitch">变调只是挪格子？</h2>
+    <p>有人会想：把频谱整排往右挪，是不是就升高了音调？概念上，谐波间距变宽，基频感会升高。真要做得好听，还要处理相位、时长、共振峰是否跟着跑——那是声码器 / phase vocoder 的事。本篇只留一张示意，不做可听的完整变调。</p>
+    <figure>
+      <img src="assets/figures/ch09_pitch_teaser.png" alt="谐波柱整体向右平移的示意">
+      <figcaption>图 9-6　左：原来的谐波位置。右：整排往高频挪。这是概念图，不是本篇脚本输出的音频。</figcaption>
+    </figure>
+
+    <h2 id="try">在网页里调三段增益</h2>
+    <p>下面用三根柱代表低、中、高。拖动增益，看哪一段变高变矮。这是示意，不是完整 FFT；改文件顶部的三个数才会重写你的 wav。</p>
+    <div class="playground">
+      <canvas id="eq-demo" class="demo stack" width="820" height="320" aria-label="三段均衡增益示意"></canvas>
+      <div class="controls">
+        <label for="g-low">低频</label>
+        <input id="g-low" type="range" min="0.2" max="2.5" step="0.1" value="1.6">
+        <output id="g-low-out" for="g-low">1.6</output>
+        <label for="g-mid">中频</label>
+        <input id="g-mid" type="range" min="0.2" max="2.5" step="0.1" value="0.7">
+        <output id="g-mid-out" for="g-mid">0.7</output>
+        <label for="g-high">高频</label>
+        <input id="g-high" type="range" min="0.2" max="2.5" step="0.1" value="1.4">
+        <output id="g-high-out" for="g-high">1.4</output>
+      </div>
+      <div class="actions">
+        <button type="button" id="eq-reset">恢复初始</button>
+      </div>
+      <p class="readout" id="eq-readout" aria-live="polite"></p>
+    </div>
+
+    <h2 id="run">运行脚本</h2>
+    <p>均衡的核心两行：</p>
+    <pre><code>spectrum = np.fft.rfft(y)
+out = np.fft.irfft(spectrum * gains, n=len(y))</code></pre>
+    <p>完整脚本在 <a href="code/ch09_effects.py"><code>code/ch09_effects.py</code></a>。课文对照用的增益是固定的，不读文件顶部的三个数。</p>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <pre class="terminal"><code>python code/ch09_effects.py</code></pre>
+      <p>终端里应出现「自检通过」，并提醒谱减法会伤细节。课文图是 <code>ch09_eq_bands.png</code>、<code>ch09_eq_spectrum.png</code>、<code>ch09_eq_wave.png</code>、<code>ch09_denoise_spectrum.png</code>、<code>ch09_denoise_wave.png</code>、<code>ch09_pitch_teaser.png</code>。<code>ch09_eq_mine.png</code> 与 <code>ch09_eq_mine.wav</code> 只跟随三段增益。</p>
+    </div>
+    <div class="callout note">
+      <p>若终端中文是乱码，先执行 <code>chcp 65001</code>。图和 wav 照样会保存。</p>
+    </div>
+
+    <h2 id="edit">改三段增益</h2>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>打开 <code>code/ch09_effects.py</code>，把 <code>GAIN_LOW</code> 改成 <code>0.3</code>，<code>GAIN_MID</code> 改成 <code>1.0</code>，<code>GAIN_HIGH</code> 改成 <code>1.0</code>，运行。听 <code>ch09_eq_mine.wav</code>：低频应明显变弱。</li>
+        <li>再试 <code>GAIN_LOW = 1</code>、<code>GAIN_MID = 1</code>、<code>GAIN_HIGH = 2.5</code>：齿音/嘶声更亮。</li>
+        <li>做完改回 <code>1.6</code>、<code>0.7</code>、<code>1.4</code>，再运行一次。</li>
+      </ol>
+    </div>
+    <figure>
+      <img src="assets/figures/ch09_eq_mine.png" alt="按文件顶部三段增益均衡前后的频谱对比">
+      <figcaption>图 9-7　你的均衡。青色是改之前，橙色是乘上三段增益之后。</figcaption>
+    </figure>
+    <p>你的声音：</p>
+    <audio controls src="assets/audio/ch09_eq_mine.wav"></audio>
+    <p>三个增益请用 0.05 到 4 之间的数。</p>
+
+    <h2 id="check">自测</h2>
+    <details class="quiz">
+      <summary>1. 三频段均衡在算法上做了哪三步？</summary>
+      <p>FFT 得到频谱 → 按低/中/高乘不同增益 → ifft（本篇用 irfft）变回波形。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. 谱减法用哪一段估计噪声？减完为什么语音常发干？</summary>
+      <p>用开头约 0.5 秒的幅度谱当噪声模板。语音细节落在噪声附近时会被一起削掉，还可能留下音乐噪声，所以听感发干、发金属。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. 把频谱整排平移等于完成了好听的变调吗？</summary>
+      <p>不等于。那只是概念示意；好听的变调还要处理相位、时长和共振峰等，需要更完整的声码器算法。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>声音是一维序列。图像是二维矩阵。下一篇对灰度图做二维傅里叶变换，看竖条纹、横条纹、斜条纹在频谱中央分别留下什么亮点。</p>
+
+    <p><a href=\"10-image-fft.html\">第 10 篇 · 图像的二维频谱</a></p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="08-stft.html">上一篇</a>
+      <a href="10-image-fft.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var INK = "#1c1915";
+      var MUTED = "#5c564c";
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+      var base = [0.9, 1.0, 0.55];
+
+      function surface(canvas) {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var width = canvas.clientWidth || 640;
+        var height = canvas.clientHeight || 320;
+        var pw = Math.round(width * dpr);
+        var ph = Math.round(height * dpr);
+        if (canvas.width !== pw || canvas.height !== ph) {
+          canvas.width = pw;
+          canvas.height = ph;
+        }
+        var ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(0, 0, width, height);
+        return { ctx: ctx, width: width, height: height };
+      }
+
+      function draw() {
+        var canvas = document.getElementById("eq-demo");
+        var box = surface(canvas);
+        var ctx = box.ctx;
+        var width = box.width;
+        var height = box.height;
+        var gLow = Number(document.getElementById("g-low").value);
+        var gMid = Number(document.getElementById("g-mid").value);
+        var gHigh = Number(document.getElementById("g-high").value);
+        var gains = [gLow, gMid, gHigh];
+        var labels = ["低频\n<300 Hz", "中频\n300–2000", "高频\n>2000 Hz"];
+        var padL = 40;
+        var padR = 20;
+        var padT = 36;
+        var padB = 56;
+        var plotH = height - padT - padB;
+        var slot = (width - padL - padR) / 3;
+        var maxG = 2.7;
+        var i;
+
+        ctx.strokeStyle = "#e6dccb";
+        ctx.lineWidth = 1;
+        for (i = 1; i <= 2; i++) {
+          var gy = padT + plotH * (1 - i / 2);
+          ctx.beginPath();
+          ctx.moveTo(padL, gy);
+          ctx.lineTo(width - padR, gy);
+          ctx.stroke();
+        }
+
+        for (i = 0; i < 3; i++) {
+          var cx = padL + slot * i + slot / 2;
+          var beforeH = (base[i] / maxG) * plotH;
+          var afterH = (base[i] * gains[i] / maxG) * plotH;
+          var barW = Math.min(52, slot * 0.28);
+          ctx.fillStyle = TEAL;
+          ctx.globalAlpha = 0.35;
+          ctx.fillRect(cx - barW - 4, padT + plotH - beforeH, barW, beforeH);
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = WAVE;
+          ctx.fillRect(cx + 4, padT + plotH - afterH, barW, afterH);
+          ctx.fillStyle = MUTED;
+          ctx.font = "12px Microsoft YaHei, sans-serif";
+          ctx.textAlign = "center";
+          var parts = labels[i].split("\n");
+          ctx.fillText(parts[0], cx, height - 28);
+          ctx.fillText(parts[1], cx, height - 12);
+          ctx.fillStyle = INK;
+          ctx.fillText((base[i] * gains[i]).toFixed(2), cx + 4 + barW / 2, padT + plotH - afterH - 8);
+        }
+
+        ctx.fillStyle = MUTED;
+        ctx.font = "13px Microsoft YaHei, sans-serif";
+        ctx.textAlign = "left";
+        ctx.fillText("淡青 = 均衡前示意　橙色 = 乘增益后", padL, 22);
+
+        document.getElementById("g-low-out").textContent = gLow.toFixed(1);
+        document.getElementById("g-mid-out").textContent = gMid.toFixed(1);
+        document.getElementById("g-high-out").textContent = gHigh.toFixed(1);
+        document.getElementById("eq-readout").textContent =
+          "当前增益：低 " + gLow.toFixed(1) + " · 中 " + gMid.toFixed(1) +
+          " · 高 " + gHigh.toFixed(1) +
+          "。把同样的三个数写进脚本顶部的 GAIN_LOW / GAIN_MID / GAIN_HIGH，运行后听 ch09_eq_mine.wav。";
+      }
+
+      ["g-low", "g-mid", "g-high"].forEach(function (id) {
+        document.getElementById(id).addEventListener("input", draw);
+      });
+      document.getElementById("eq-reset").addEventListener("click", function () {
+        document.getElementById("g-low").value = "1.6";
+        document.getElementById("g-mid").value = "0.7";
+        document.getElementById("g-high").value = "1.4";
+        draw();
+      });
+      window.addEventListener("resize", draw);
+      draw();
+    })();
+  </script>
+</body>
+</html>

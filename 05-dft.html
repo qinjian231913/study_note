@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 5 篇 · 离散傅里叶变换 DFT</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        傅里叶变换 · 音视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="04-series.html">第 4 篇</a>
+        <a href="05-dft.html" aria-current="page">第 5 篇</a>
+        <a href="06-fft.html">第 6 篇</a>
+        <a href="07-audio.html">第 7 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 5 篇 · 有限个点 · 约 55 分钟</p>
+    <h1>离散傅里叶变换 DFT</h1>
+    <p class="lede">第 4 篇在一个连续周期上求平均。计算机里只有有限个采样点。这一篇把同样的「对齐」做成离散傅里叶变换：N 个点进去，N 个频率格子出来。先弄清「档位变多」为什么不是「频率变高」，再手算一个很小的例子，并看只有幅度、没有相位为什么拼不回原来的波形。</p>
+    <div class="meta">
+      <span class="pill">先读：第 3 篇、第 4 篇</span>
+      <span class="pill">会看到 N 个格子、时长与档位、相位</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#bins">N 个点，N 个格子</a></li>
+        <li><a href="#longer">时长越长，档位越多？</a></li>
+        <li><a href="#words">用话写出公式</a></li>
+        <li><a href="#table">手算 N = 4 与 N = 8</a></li>
+        <li><a href="#magphase">幅度和相位</a></li>
+        <li><a href="#try">在网页里拨 N = 8</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改频率和点数</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="bins">N 个点，N 个格子</h2>
+    <p>这一节只说一件事：你量了多少个时间点，频谱就只能分成同样多份「频率格子」（也叫频率档位）。</p>
+    <p>取 N 个采样点，采样率是 fs。离散傅里叶变换（DFT）给出 N 个复数 X[0]、X[1]、…、X[N−1]。DFT 要能完整变回原来的 N 个点，信息量要对得上，所以<strong>档位数等于点数</strong>。每个编号 k 对应一个频率格子：</p>
+    <p class="formula">fₖ = k × fs / N　　　格子间距 Δf = fs / N</p>
+    <p>Δf 叫频率分辨率：再细的频率差别，这 N 个点也分不开。总时长大约是 T = N / fs，也可以记成 Δf ≈ 1 / T——听得越久，越能分清「每秒多差了一小点圈数」。</p>
+    <p>课文固定例子：N = 8，fs = 8 Hz，于是 Δf = 1 Hz。八个时间点对应八个固定问题：有没有 0 Hz？有没有 1 Hz？……有没有 7 Hz？</p>
+    <div class="table-scroll">
+      <table>
+        <caption>N = 8，fs = 8 Hz 时，格子编号与频率一一对应。</caption>
+        <thead>
+          <tr><th>格子 k</th><th class="num">频率 fₖ</th><th>白话</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>0</td><td class="num">0 Hz</td><td>直流：整体抬高多少</td></tr>
+          <tr><td>1</td><td class="num">1 Hz</td><td>1 秒里正好一圈</td></tr>
+          <tr><td>2</td><td class="num">2 Hz</td><td>1 秒里两圈</td></tr>
+          <tr><td>…</td><td class="num">…</td><td>…</td></tr>
+          <tr><td>7</td><td class="num">7 Hz</td><td>实信号里常作 k = 1 的镜像</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>信号是正好走完一圈的 1 Hz 余弦：</p>
+    <p class="formula">x[n] = cos(2π n / 8)，n = 0, 1, …, 7</p>
+    <figure>
+      <img src="assets/figures/ch05_samples.png" alt="八个采样点落在一条余弦上">
+      <figcaption>图 5-1　八个点按时间排开。数值大约是 1.00、0.71、0.00、−0.71、−1.00、−0.71、0.00、0.71。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch05_bins.png" alt="幅度谱在 k=1 和 k=7 有高峰">
+      <figcaption>图 5-2　上图按格子编号画幅度。下图换成频率（Hz）。能量集中在 1 Hz 和 7 Hz：对实数信号，后一半格子是前一半的镜像，7 = 8−1。</figcaption>
+    </figure>
+
+    <h2 id="longer">时长越长，档位越多？</h2>
+    <p>会。44100 Hz 的音频录 1 秒有 44100 个点，录 10 秒有 441000 个点。若对<strong>整段</strong>做一次 DFT，档位数确实跟着 N 变多。容易误会的是：档位变多，并不是「能听到更高的频率」，而是<strong>同一段频率范围被切得更细</strong>。</p>
+    <p>采样率固定时，能表示的最高频率大约是 fs / 2（奈奎斯特频率）。变的是格子间距：</p>
+    <div class="table-scroll">
+      <table>
+        <caption>fs = 44100 Hz 时，整段 DFT 的档位数与分辨率。</caption>
+        <thead>
+          <tr><th>时长</th><th class="num">点数 N</th><th class="num">Δf = fs / N</th><th>频率范围</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>1 s</td><td class="num">44100</td><td class="num">约 1 Hz</td><td>仍是 0～fs（有用的大约到 fs/2）</td></tr>
+          <tr><td>10 s</td><td class="num">441000</td><td class="num">约 0.1 Hz</td><td>同上，只是格子更密</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>所以 10 秒那段能分清 440.0 Hz 和 440.1 Hz；1 秒那段大约只能分到 1 Hz 量级。尺子变长了，刻度更密，不是世界变大了。</p>
+    <div class="callout note">
+      <p><strong>实务里很少对整首歌做一次 DFT。</strong>常见做法是切固定长度的短窗（例如 2048 点），对每一窗做 DFT，再把窗口往后滑。这时：</p>
+      <ul>
+        <li><strong>窗长（帧长）</strong>：一帧有多少个采样点 → 决定<strong>每一帧有多少个频率档</strong>，以及 Δf ≈ fs / 窗长。</li>
+        <li><strong>步长（hop）</strong>：下一帧相对上一帧往前跳多少点 → 决定滑得多密。</li>
+        <li><strong>帧数</strong>：整段里一共做了多少次 DFT ≈ ⌊(总点数 − 窗长) / 步长⌋ + 1。歌越长，主要是帧数变多，不是每帧档位变多。</li>
+      </ul>
+      <p>频谱图（语谱图）可以记成：纵轴（频率档）由窗长定，横轴（时间格）由帧数定。第 8 篇会专门练帧长、步长和重叠。</p>
+    </div>
+    <p>一句话：理论 DFT 是 N 进 N 出，越长档越密、频率范围不变；实际听感分析常用固定窗长，时长只影响有多少帧。</p>
+
+    <h2 id="words">用话写出公式</h2>
+    <p>第 4 篇问：波形和标准正弦、余弦有多齐。DFT 对每个格子 k 做同一件事，只是换成离散求和：</p>
+    <p class="formula">X[k] = Σₙ x[n] · (cos θ − j sin θ)，　　θ = 2π k n / N</p>
+    <p>Σₙ 表示 n 从 0 加到 N−1。可以读成三句：</p>
+    <ul>
+      <li>实部：把 x[n] 和「转了 k 圈的余弦」逐点相乘再相加——和余弦有多齐。</li>
+      <li>虚部：和「转了 k 圈的正弦」相乘再相加，前面带一个负号——和正弦有多齐。</li>
+      <li>合起来是一个复数。幅度 |X[k]| 表示这个频率有多强；相位表示波峰相对起点偏了多少。</li>
+    </ul>
+    <figure>
+      <img src="assets/figures/ch05_real_imag.png" alt="实部在 k=1 和 k=7 很大，虚部接近 0">
+      <figcaption>图 5-3　纯余弦例子：实部在 k = 1、7 很大，虚部几乎是 0。若换成正弦，强弱会挪到虚部。</figcaption>
+    </figure>
+    <p>脚本里的慢速 DFT 就是两层循环：外层扫 k，内层扫 n，按上面相乘累加。算完再和 <code>numpy.fft.fft</code> 比一次，最大绝对误差应接近 0。</p>
+
+    <h2 id="table">手算 N = 4 与 N = 8</h2>
+    <p>先看更短的 N = 4，信号 x = [1, 0, −1, 0]。它是 cos(π n / 2) 的四个点。手算时角度是 2π k n / 4 = π k n / 2。</p>
+    <div class="table-scroll">
+      <table>
+        <caption>N = 4，x = [1, 0, −1, 0]。X[k] 用双重循环累加得到。</caption>
+        <thead>
+          <tr><th>k</th><th class="num">频率 (fs=4)</th><th class="num">实部</th><th class="num">虚部</th><th class="num">|X[k]|</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>0</td><td class="num">0 Hz</td><td class="num">0</td><td class="num">0</td><td class="num">0</td></tr>
+          <tr><td>1</td><td class="num">1 Hz</td><td class="num">2</td><td class="num">0</td><td class="num">2</td></tr>
+          <tr><td>2</td><td class="num">2 Hz</td><td class="num">0</td><td class="num">0</td><td class="num">0</td></tr>
+          <tr><td>3</td><td class="num">3 Hz</td><td class="num">2</td><td class="num">0</td><td class="num">2</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>再看课文的 N = 8 余弦。对实信号，X[N−k] 是 X[k] 的共轭，所以 k = 1 和 k = 7 成对出现。</p>
+    <div class="table-scroll">
+      <table>
+        <caption>N = 8，x[n] = cos(2π n / 8)。数值来自慢速 DFT，与 numpy.fft.fft 一致。</caption>
+        <thead>
+          <tr><th>k</th><th class="num">fₖ (Hz)</th><th class="num">实部</th><th class="num">虚部</th><th class="num">|X[k]|</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td></tr>
+          <tr><td>1</td><td class="num">1</td><td class="num">4</td><td class="num">0</td><td class="num">4</td></tr>
+          <tr><td>2</td><td class="num">2</td><td class="num">0</td><td class="num">0</td><td class="num">0</td></tr>
+          <tr><td>3</td><td class="num">3</td><td class="num">0</td><td class="num">0</td><td class="num">0</td></tr>
+          <tr><td>4</td><td class="num">4</td><td class="num">0</td><td class="num">0</td><td class="num">0</td></tr>
+          <tr><td>5</td><td class="num">5</td><td class="num">0</td><td class="num">0</td><td class="num">0</td></tr>
+          <tr><td>6</td><td class="num">6</td><td class="num">0</td><td class="num">0</td><td class="num">0</td></tr>
+          <tr><td>7</td><td class="num">7</td><td class="num">4</td><td class="num">0</td><td class="num">4</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>为什么是 4 不是 1？DFT 常用「不除以 N」的写法，一对共轭各贡献 N/2。除以 N 之后，幅度才回到时域振幅 1 附近。这一课先盯住格子编号和对齐，归一化放到后面用。</p>
+
+    <h2 id="magphase">幅度和相位</h2>
+    <p>每个 X[k] 可以拆成幅度和相位。幅度谱告诉你「哪些频率有多重」；相位谱告诉你「各分量的波峰怎么对齐」。</p>
+    <figure>
+      <img src="assets/figures/ch05_mag_phase.png" alt="幅度谱两根柱，相位谱在有能量的格子上接近 0">
+      <figcaption>图 5-4　上图幅度，下图相位。幅度接近 0 的格子相位没有稳定含义，图画成 0。</figcaption>
+    </figure>
+    <p>若只留下幅度、把相位全部清零，再变回时域，波形会对不上。第 3 篇说过相位不在柱高上。下面改用同频率的正弦：幅度谱和余弦几乎一样，相位不同。</p>
+    <figure>
+      <img src="assets/figures/ch05_phase.png" alt="真实相位重建成功，零相位重建变成更像余弦">
+      <figcaption>图 5-5　上图用真实相位，回到原来的正弦。下图相位清零，幅度没变，形状却更像余弦。纯余弦本身相位接近 0，清零看不出差别，所以这里用正弦对照。</figcaption>
+    </figure>
+
+    <h2 id="try">在网页里拨 N = 8</h2>
+    <p>下面固定 8 个点。拖动「频率格子」，合成 cos(2π k₀ n / 8)。幅度谱应在 k₀ 和 8−k₀ 出现高峰；相位在有能量的格子上接近 0（纯余弦）。</p>
+    <div class="playground">
+      <canvas id="dft-demo" class="demo stack" width="820" height="480" aria-label="八个采样点及其 DFT 幅度与相位"></canvas>
+      <div class="controls">
+        <label for="bin-k">频率格子 k₀</label>
+        <input id="bin-k" type="range" min="0" max="4" step="1" value="1">
+        <output id="bin-k-out" for="bin-k">1</output>
+      </div>
+      <div class="actions">
+        <button type="button" id="dft-reset">恢复初始</button>
+      </div>
+      <p class="readout" id="dft-readout" aria-live="polite"></p>
+    </div>
+    <p>k₀ = 0 是直流，八个点都是 1，能量全在 k = 0。k₀ = 4 是 Nyquist，点在 1 与 −1 之间跳。k₀ = 1 就是课文例子。</p>
+
+    <h2 id="run">运行脚本</h2>
+    <p>慢速 DFT 的骨架如下。完整脚本在 <a href="code/ch05_dft.py"><code>code/ch05_dft.py</code></a>。</p>
+    <pre><code>def slow_dft(x):
+    N = len(x)
+    X = np.zeros(N, dtype=complex)
+    for k in range(N):
+        for n in range(N):
+            angle = 2 * np.pi * k * n / N
+            X[k] += x[n] * (np.cos(angle) - 1j * np.sin(angle))
+    return X</code></pre>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <pre class="terminal"><code>python code/ch05_dft.py</code></pre>
+      <p>终端里应出现「自检通过」，以及慢速 DFT 与 <code>numpy.fft.fft</code> 的最大绝对误差（接近 0）。还会打印 N = 8 每个格子的实部、虚部和幅度。课文图是 <code>ch05_samples.png</code>、<code>ch05_bins.png</code>、<code>ch05_real_imag.png</code>、<code>ch05_mag_phase.png</code>、<code>ch05_phase.png</code>。你的图 <code>ch05_mine_wave.png</code>、<code>ch05_mine_mag.png</code> 只跟随顶部的 <code>FREQUENCY</code> 和 <code>N_MINE</code>。</p>
+    </div>
+    <div class="callout note">
+      <p>若终端中文是乱码，先执行 <code>chcp 65001</code>。图照样会保存。</p>
+    </div>
+
+    <h2 id="edit">改频率和点数</h2>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>打开 <code>code/ch05_dft.py</code>。默认 <code>FREQUENCY = 2.0</code>，<code>N_MINE = 32</code>，<code>SAMPLE_RATE_MINE = 32.0</code>，于是 Δf = 1 Hz，2 Hz 正好落在格子上。</li>
+        <li>把 <code>FREQUENCY</code> 改成 <code>2.3</code>，运行。打开 <code>ch05_mine_mag.png</code>：主峰附近会摊开一点——频率没落在格子中心。这就是下一篇要细讲的泄漏的苗头。</li>
+        <li>把 <code>FREQUENCY</code> 改回 <code>2.0</code>，把 <code>N_MINE</code> 改成 <code>64</code>（可把 <code>SAMPLE_RATE_MINE</code> 也改成 <code>64</code> 保持时长 1 秒），再运行：格子更密。</li>
+        <li>做完改回 <code>FREQUENCY = 2.0</code>，<code>N_MINE = 32</code>，<code>SAMPLE_RATE_MINE = 32.0</code>。</li>
+      </ol>
+    </div>
+    <figure>
+      <img src="assets/figures/ch05_mine_wave.png" alt="你的余弦采样点">
+      <figcaption>图 5-6　你的时域。默认 2 Hz、32 点。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch05_mine_mag.png" alt="你的幅度谱">
+      <figcaption>图 5-7　你的幅度谱（画到 Nyquist）。只跟随顶部可改参数。</figcaption>
+    </figure>
+
+    <h2 id="check">自测</h2>
+    <details class="quiz">
+      <summary>1. N = 8，fs = 8 Hz 时，频率分辨率是多少？k = 3 对应多少 Hz？</summary>
+      <p>Δf = fs/N = 1 Hz。k = 3 对应 3 Hz。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. 44100 Hz 音频从 1 秒加长到 10 秒，对整段做一次 DFT，档位变多意味着什么？实务里常用什么做法？</summary>
+      <p>频率范围仍大约到 fs/2，只是格子更密（Δf 从约 1 Hz 到约 0.1 Hz）。实务里常用固定窗长切帧做 DFT：窗长定每帧档位数，步长和总长定帧数；歌越长主要是帧数变多。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. DFT 的实部和虚部分别在对齐什么？</summary>
+      <p>实部对齐「转了 k 圈的余弦」，虚部对齐「转了 k 圈的正弦」（公式里正弦项带负号）。幅度表示强弱，相位表示波峰怎么偏。</p>
+    </details>
+    <details class="quiz">
+      <summary>4. 为什么只看幅度谱往往拼不回原来的波形？</summary>
+      <p>幅度丢掉了相位。相位清零后再变回时域，点的个数还在，起伏形状会变。图 5-5 用正弦对照：清零后更像余弦。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>慢速双重循环在点数变大时会很慢。下一篇看 FFT 怎样更快地算出同一个 DFT，用逆变换走一个来回，并处理频谱泄漏和窗函数。</p>
+
+    <p><a href="06-fft.html">第 6 篇 · FFT、逆变换与窗</a></p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="04-series.html">上一篇</a>
+      <a href="06-fft.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var INK = "#1c1915";
+      var MUTED = "#5c564c";
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+      var N = 8;
+
+      function surface(canvas) {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var width = canvas.clientWidth || 640;
+        var height = canvas.clientHeight || 480;
+        var pw = Math.round(width * dpr);
+        var ph = Math.round(height * dpr);
+        if (canvas.width !== pw || canvas.height !== ph) {
+          canvas.width = pw;
+          canvas.height = ph;
+        }
+        var ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(0, 0, width, height);
+        return { ctx: ctx, width: width, height: height };
+      }
+
+      function makeSignal(k0) {
+        var x = new Array(N);
+        var n;
+        for (n = 0; n < N; n++) {
+          x[n] = Math.cos(2 * Math.PI * k0 * n / N);
+        }
+        return x;
+      }
+
+      function dft(x) {
+        var Xre = new Array(N);
+        var Xim = new Array(N);
+        var k, n;
+        for (k = 0; k < N; k++) {
+          var re = 0;
+          var im = 0;
+          for (n = 0; n < N; n++) {
+            var angle = 2 * Math.PI * k * n / N;
+            re += x[n] * Math.cos(angle);
+            im -= x[n] * Math.sin(angle);
+          }
+          Xre[k] = re;
+          Xim[k] = im;
+        }
+        return { re: Xre, im: Xim };
+      }
+
+      function draw() {
+        var canvas = document.getElementById("dft-demo");
+        var box = surface(canvas);
+        var ctx = box.ctx;
+        var width = box.width;
+        var height = box.height;
+        var k0 = Number(document.getElementById("bin-k").value);
+        var x = makeSignal(k0);
+        var X = dft(x);
+        var mag = [];
+        var phase = [];
+        var k;
+        for (k = 0; k < N; k++) {
+          var m = Math.hypot(X.re[k], X.im[k]);
+          mag.push(m);
+          phase.push(m < 1e-8 ? 0 : Math.atan2(X.im[k], X.re[k]));
+        }
+
+        var padL = 36;
+        var padR = 16;
+        var timeTop = 24;
+        var timeBottom = Math.round(height * 0.34);
+        var magTop = timeBottom + 40;
+        var magBottom = Math.round(height * 0.66);
+        var phTop = magBottom + 36;
+        var phBottom = height - 28;
+
+        function xAt(i, count) {
+          return padL + ((i + 0.5) / count) * (width - padL - padR);
+        }
+        function yTime(y) {
+          return timeTop + (1 - (y + 1.3) / 2.6) * (timeBottom - timeTop);
+        }
+        function yMag(m) {
+          return magBottom - (m / 8.5) * (magBottom - magTop);
+        }
+        function yPhase(p) {
+          return phTop + (1 - (p + Math.PI) / (2 * Math.PI)) * (phBottom - phTop);
+        }
+
+        ctx.strokeStyle = INK;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(padL, yTime(0));
+        ctx.lineTo(width - padR, yTime(0));
+        ctx.moveTo(padL, magBottom);
+        ctx.lineTo(width - padR, magBottom);
+        ctx.moveTo(padL, yPhase(0));
+        ctx.lineTo(width - padR, yPhase(0));
+        ctx.stroke();
+
+        for (k = 0; k < N; k++) {
+          var xt = xAt(k, N);
+          ctx.strokeStyle = WAVE;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(xt, yTime(0));
+          ctx.lineTo(xt, yTime(x[k]));
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.fillStyle = WAVE;
+          ctx.arc(xt, yTime(x[k]), 4, 0, Math.PI * 2);
+          ctx.fill();
+
+          var xm = xAt(k, N);
+          var top = yMag(mag[k]);
+          ctx.fillStyle = WAVE;
+          ctx.fillRect(xm - 8, top, 16, magBottom - top);
+
+          var xp = xAt(k, N);
+          ctx.strokeStyle = TEAL;
+          ctx.beginPath();
+          ctx.moveTo(xp, yPhase(0));
+          ctx.lineTo(xp, yPhase(phase[k]));
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.fillStyle = TEAL;
+          ctx.arc(xp, yPhase(phase[k]), 3.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        ctx.fillStyle = MUTED;
+        ctx.font = "13px Microsoft YaHei, sans-serif";
+        ctx.textAlign = "left";
+        ctx.fillText("时域 x[n]", padL, 16);
+        ctx.fillText("|X[k]|", padL, magTop - 10);
+        ctx.fillText("相位", padL, phTop - 10);
+
+        ctx.font = "12px Consolas, Microsoft YaHei, sans-serif";
+        ctx.textAlign = "center";
+        for (k = 0; k < N; k++) {
+          ctx.fillStyle = MUTED;
+          ctx.fillText(String(k), xAt(k, N), height - 8);
+        }
+
+        document.getElementById("bin-k-out").textContent = String(k0);
+        var twin = (k0 === 0 || k0 === 4) ? ("能量主要在 k = " + k0) : ("能量在 k = " + k0 + " 与 k = " + (N - k0));
+        document.getElementById("dft-readout").textContent =
+          "k₀ = " + k0 + "，fs = 8 Hz，Δf = 1 Hz。" + twin +
+          "。|X| 峰值约 " + Math.max.apply(null, mag).toFixed(2) +
+          "。纯余弦时有能量格子的相位接近 0。";
+      }
+
+      document.getElementById("bin-k").addEventListener("input", draw);
+      document.getElementById("dft-reset").addEventListener("click", function () {
+        document.getElementById("bin-k").value = "1";
+        draw();
+      });
+      window.addEventListener("resize", draw);
+      draw();
+    })();
+  </script>
+</body>
+</html>

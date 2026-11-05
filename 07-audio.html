@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 7 篇 · 真实声音的频谱</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        傅里叶变换 · 音视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="05-dft.html">第 5 篇</a>
+        <a href="06-fft.html">第 6 篇</a>
+        <a href="07-audio.html" aria-current="page">第 7 篇</a>
+        <a href="08-stft.html">第 8 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 7 篇 · 听得见的频谱 · 约 50 分钟</p>
+    <h1>真实声音的频谱</h1>
+    <p class="lede">前几篇的点都很短。这一篇用合成的「像录音一样」的声音：纯音、和弦、同一基频不同泛音。读进 wav、画波形和以分贝显示的幅度谱，并看清整段一次 FFT 为什么分不出音符谁先谁后。</p>
+    <div class="meta">
+      <span class="pill">先读：第 5 篇、第 6 篇</span>
+      <span class="pill">会对比亮与闷</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#pure">纯音 220 Hz</a></li>
+        <li><a href="#chord">和弦：多根峰</a></li>
+        <li><a href="#timbre">同一音高，不同音色</a></li>
+        <li><a href="#order">整段 FFT 看不见先后</a></li>
+        <li><a href="#read">怎样读一段 wav</a></li>
+        <li><a href="#try">在网页里调泛音</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改配方或换文件</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="pure">纯音 220 Hz</h2>
+    <p>先合成一秒、采样率 16000 Hz 的纯正弦。波形是一条干净的起伏；频谱用分贝（dB）画幅度，主峰应靠近 220 Hz。</p>
+    <figure>
+      <img src="assets/figures/ch07_pure.png" alt="220 Hz 纯音的波形与 dB 频谱">
+      <figcaption>图 7-1　上图只画开头 50 ms，看得清周期。下图橙色圆点标出较高的峰。dB 把很矮的成分也抬到能看见的范围。</figcaption>
+    </figure>
+    <audio controls src="assets/audio/ch07_pure_220.wav"></audio>
+
+    <h2 id="chord">和弦：多根峰</h2>
+    <p>把 220 Hz、275 Hz、330 Hz 叠在一起，耳朵听到一个更丰满的和弦。频谱上应出现多根峰，而不再是一条孤立的线。</p>
+    <figure>
+      <img src="assets/figures/ch07_chord.png" alt="和弦的波形与多峰频谱">
+      <figcaption>图 7-2　时域更密、更不规则。频域里几根峰并排，对应配方里的几个频率。</figcaption>
+    </figure>
+    <audio controls src="assets/audio/ch07_chord.wav"></audio>
+
+    <h2 id="timbre">同一音高，不同音色</h2>
+    <p>基频都是 220 Hz，改变泛音（谐波）的相对强弱，听感会从闷变亮。这就是音色差别的一种简单模型：音高看 f₀，亮度看高次泛音有多少。</p>
+    <figure>
+      <img src="assets/figures/ch07_timbre.png" alt="亮音色与闷音色的频谱叠画">
+      <figcaption>图 7-3　橙色泛音多，青色泛音少。主峰都在 220 Hz 一带，高处的山脊高度不同。</figcaption>
+    </figure>
+    <div class="table-scroll">
+      <table>
+        <caption>同一 f₀ = 220 Hz 的两种配方（振幅是合成时的相对权重，保存前还会整体归一化）</caption>
+        <thead>
+          <tr><th>倍数</th><th class="num">亮</th><th class="num">闷</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>1 × 220</td><td class="num">0.55</td><td class="num">0.85</td></tr>
+          <tr><td>2 × 220</td><td class="num">0.40</td><td class="num">0.25</td></tr>
+          <tr><td>3 × 220</td><td class="num">0.32</td><td class="num">0.08</td></tr>
+          <tr><td>4 × 220</td><td class="num">0.22</td><td class="num">0</td></tr>
+          <tr><td>5 × 220</td><td class="num">0.16</td><td class="num">0</td></tr>
+          <tr><td>6 × 220</td><td class="num">0.10</td><td class="num">0</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <figure>
+      <img src="assets/figures/ch07_bright.png" alt="亮音色的波形与频谱">
+      <figcaption>图 7-4　亮音色：波形棱角更明显，频谱高处仍有峰。</figcaption>
+    </figure>
+    <audio controls src="assets/audio/ch07_bright.wav"></audio>
+    <figure>
+      <img src="assets/figures/ch07_dull.png" alt="闷音色的波形与频谱">
+      <figcaption>图 7-5　闷音色：更接近纯音，高频峰很矮。</figcaption>
+    </figure>
+    <audio controls src="assets/audio/ch07_dull.wav"></audio>
+
+    <h2 id="order">整段 FFT 看不见先后</h2>
+    <p>先只响 220 Hz 半秒，再只响 330 Hz 半秒。整段录音做一次 FFT，频谱上仍可能看到两根峰——和「两音同时响」很像。FFT 回答「这一整段里有过哪些频率」，不回答「谁先谁后」。</p>
+    <figure>
+      <img src="assets/figures/ch07_order_blind.png" alt="先后演奏与同时演奏的整段频谱很像">
+      <figcaption>图 7-6　上图先后，下图同时。虚线在 220 与 330。峰的位置相像；时间顺序要靠短时分析（以后会遇到），不是这一次整段 FFT。</figcaption>
+    </figure>
+    <p>先后两个音。</p>
+    <audio controls src="assets/audio/ch07_seq_notes.wav"></audio>
+    <p>两音同时（对照）。</p>
+    <audio controls src="assets/audio/ch07_chord_ref.wav"></audio>
+
+    <h2 id="read">怎样读一段 wav</h2>
+    <p>脚本用标准库 <code>wave</code> 读文件：取采样率、把字节变成整数，多声道先平均成单声道，再除以峰值归一化。课文不依赖你麦克风里的现成采样，所有示范音都是脚本写出来的。</p>
+    <pre><code>with wave.open(path, "r") as handle:
+    channels = handle.getnchannels()
+    rate = handle.getframerate()
+    raw = handle.readframes(handle.getnframes())
+# 16 位整数 → 浮点 → 单声道 → 按峰值归一化</code></pre>
+
+    <h2 id="try">在网页里调泛音</h2>
+    <p>拖动 2 倍、3 倍、4 倍泛音的振幅。基频固定 220 Hz。幅度谱用线性柱示意（不是 dB），听感要跑脚本听 wav。</p>
+    <div class="playground">
+      <canvas id="timbre-demo" class="demo stack" width="820" height="440" aria-label="调节泛音后的波形与频谱示意"></canvas>
+      <div class="controls">
+        <label for="h2">2 倍振幅</label>
+        <input id="h2" type="range" min="0" max="0.8" step="0.05" value="0.4">
+        <output id="h2-out" for="h2">0.40</output>
+      </div>
+      <div class="controls">
+        <label for="h3">3 倍振幅</label>
+        <input id="h3" type="range" min="0" max="0.8" step="0.05" value="0.3">
+        <output id="h3-out" for="h3">0.30</output>
+      </div>
+      <div class="controls">
+        <label for="h4">4 倍振幅</label>
+        <input id="h4" type="range" min="0" max="0.8" step="0.05" value="0.2">
+        <output id="h4-out" for="h4">0.20</output>
+      </div>
+      <div class="actions">
+        <button type="button" id="timbre-reset">恢复初始</button>
+        <button type="button" id="timbre-dull">闷一点</button>
+        <button type="button" id="timbre-bright">亮一点</button>
+      </div>
+      <p class="readout" id="timbre-readout" aria-live="polite"></p>
+    </div>
+
+    <h2 id="run">运行脚本</h2>
+    <p>完整脚本在 <a href="code/ch07_audio.py"><code>code/ch07_audio.py</code></a>。它会写出课文 wav、画波形与 dB 谱，并标出较高的峰。</p>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <pre class="terminal"><code>python code/ch07_audio.py</code></pre>
+      <p>终端里应出现「自检通过」，以及纯音主峰约 220 Hz。课文图包括 <code>ch07_pure.png</code>、<code>ch07_chord.png</code>、<code>ch07_timbre.png</code>、<code>ch07_bright.png</code>、<code>ch07_dull.png</code>、<code>ch07_order_blind.png</code>。你的结果只跟随顶部的 <code>HARMONICS_MINE</code> 或 <code>WAV_PATH_MINE</code>。</p>
+    </div>
+    <div class="callout note">
+      <p>若终端中文是乱码，先执行 <code>chcp 65001</code>。图和 wav 照样会保存。</p>
+    </div>
+
+    <h2 id="edit">改配方或换文件</h2>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>打开 <code>code/ch07_audio.py</code>。默认用 <code>HARMONICS_MINE</code> 合成，<code>WAV_PATH_MINE = ""</code>。</li>
+        <li>把 5 倍那一项改成 <code>5: 0.40</code>，运行。听 <code>ch07_timbre_mine.wav</code>，看 <code>ch07_mine_spectrum.png</code>：高频更明显。</li>
+        <li>若已有自己的 16 位 wav，把 <code>WAV_PATH_MINE</code> 写成相对项目根的路径（例如 <code>assets/audio/ch07_bright.wav</code>），再运行：mine 图改读该文件。</li>
+        <li>做完把配方改回，<code>WAV_PATH_MINE</code> 改回 <code>""</code>。</li>
+      </ol>
+    </div>
+    <figure>
+      <img src="assets/figures/ch07_mine_wave.png" alt="你的时域波形">
+      <figcaption>图 7-7　你的时域（前 50 ms）。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch07_mine_spectrum.png" alt="你的波形与频谱">
+      <figcaption>图 7-8　你的波形 + dB 谱。只跟随顶部可改参数。</figcaption>
+    </figure>
+    <p>你的声音：</p>
+    <audio controls src="assets/audio/ch07_timbre_mine.wav"></audio>
+
+    <h2 id="check">自测</h2>
+    <details class="quiz">
+      <summary>1. 纯音和和弦在频谱上最明显的差别是什么？</summary>
+      <p>纯音主要一根峰；和弦有多根峰，对应同时存在的几个频率。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. 基频相同，为什么听起来还能分出亮和闷？</summary>
+      <p>高次泛音的相对强弱不同。泛音多、高处更强，通常更亮；几乎只剩基频，更闷、更接近纯音。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. 为什么「先 220 再 330」和「两音一起响」的整段 FFT 会很像？</summary>
+      <p>整段一次 FFT 只统计整段里出现过的频率成分，把时间顺序揉掉了。要看先后，需要短时频谱一类方法。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>整段一次 FFT 分不清音符先后。下一篇用短时傅里叶把时间切成一帧帧，画出语谱图：横轴时间，纵轴频率。</p>
+    <p><a href="08-stft.html">第 8 篇 · 短时傅里叶与语谱图</a></p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="06-fft.html">上一篇</a>
+      <a href="08-stft.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var INK = "#1c1915";
+      var MUTED = "#5c564c";
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+      var F0 = 220;
+      var FS = 8000;
+      var N = 512;
+
+      function surface(canvas) {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var width = canvas.clientWidth || 640;
+        var height = canvas.clientHeight || 440;
+        var pw = Math.round(width * dpr);
+        var ph = Math.round(height * dpr);
+        if (canvas.width !== pw || canvas.height !== ph) {
+          canvas.width = pw;
+          canvas.height = ph;
+        }
+        var ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(0, 0, width, height);
+        return { ctx: ctx, width: width, height: height };
+      }
+
+      function makeSignal(a2, a3, a4) {
+        var x = new Array(N);
+        var n;
+        var peak = 0;
+        for (n = 0; n < N; n++) {
+          var t = n / FS;
+          var y = 0.7 * Math.sin(2 * Math.PI * F0 * t)
+            + a2 * Math.sin(2 * Math.PI * 2 * F0 * t)
+            + a3 * Math.sin(2 * Math.PI * 3 * F0 * t)
+            + a4 * Math.sin(2 * Math.PI * 4 * F0 * t);
+          x[n] = y;
+          if (Math.abs(y) > peak) peak = Math.abs(y);
+        }
+        if (peak > 0) {
+          for (n = 0; n < N; n++) x[n] /= peak;
+        }
+        return x;
+      }
+
+      function spectrum(x) {
+        var half = N / 2;
+        var mag = new Array(half + 1);
+        var k, n;
+        for (k = 0; k <= half; k++) {
+          var re = 0;
+          var im = 0;
+          for (n = 0; n < N; n++) {
+            var angle = 2 * Math.PI * k * n / N;
+            re += x[n] * Math.cos(angle);
+            im -= x[n] * Math.sin(angle);
+          }
+          var m = Math.hypot(re, im) * 2 / N;
+          if (k === 0 || k === half) m = Math.hypot(re, im) / N;
+          mag[k] = m;
+        }
+        return mag;
+      }
+
+      function draw() {
+        var canvas = document.getElementById("timbre-demo");
+        var box = surface(canvas);
+        var ctx = box.ctx;
+        var width = box.width;
+        var height = box.height;
+        var a2 = Number(document.getElementById("h2").value);
+        var a3 = Number(document.getElementById("h3").value);
+        var a4 = Number(document.getElementById("h4").value);
+        var x = makeSignal(a2, a3, a4);
+        var mag = spectrum(x);
+
+        var padL = 36;
+        var padR = 16;
+        var timeTop = 24;
+        var timeBottom = Math.round(height * 0.42);
+        var specTop = timeBottom + 40;
+        var specBottom = height - 30;
+
+        function xTime(i) {
+          return padL + (i / (N - 1)) * (width - padL - padR);
+        }
+        function yTime(y) {
+          return timeTop + (1 - (y + 1.15) / 2.3) * (timeBottom - timeTop);
+        }
+        function xFreq(f) {
+          var fMax = 1200;
+          return padL + (f / fMax) * (width - padL - padR);
+        }
+        function yMag(m) {
+          return specBottom - (m / 1.05) * (specBottom - specTop);
+        }
+
+        ctx.strokeStyle = INK;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(padL, yTime(0));
+        ctx.lineTo(width - padR, yTime(0));
+        ctx.moveTo(padL, specBottom);
+        ctx.lineTo(width - padR, specBottom);
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.strokeStyle = WAVE;
+        ctx.lineWidth = 2;
+        var i;
+        for (i = 0; i < N; i++) {
+          var xx = xTime(i);
+          var yy = yTime(x[i]);
+          if (i === 0) ctx.moveTo(xx, yy);
+          else ctx.lineTo(xx, yy);
+        }
+        ctx.stroke();
+
+        var harmonics = [1, 2, 3, 4];
+        var amps = [0.7, a2, a3, a4];
+        for (i = 0; i < harmonics.length; i++) {
+          var f = harmonics[i] * F0;
+          var bin = Math.round(f * N / FS);
+          var m = bin <= N / 2 ? mag[bin] : 0;
+          var left = xFreq(f) - 8;
+          ctx.fillStyle = i === 0 ? TEAL : WAVE;
+          ctx.fillRect(left, yMag(m), 16, specBottom - yMag(m));
+        }
+
+        ctx.fillStyle = MUTED;
+        ctx.font = "13px Microsoft YaHei, sans-serif";
+        ctx.textAlign = "left";
+        ctx.fillText("时域", padL, 16);
+        ctx.fillText("线性幅度示意", padL, specTop - 10);
+        ctx.font = "12px Consolas, Microsoft YaHei, sans-serif";
+        ctx.textAlign = "center";
+        for (i = 0; i < harmonics.length; i++) {
+          ctx.fillStyle = MUTED;
+          ctx.fillText(String(harmonics[i] * F0), xFreq(harmonics[i] * F0), height - 8);
+        }
+
+        document.getElementById("h2-out").textContent = a2.toFixed(2);
+        document.getElementById("h3-out").textContent = a3.toFixed(2);
+        document.getElementById("h4-out").textContent = a4.toFixed(2);
+        var sumHi = a2 + a3 + a4;
+        document.getElementById("timbre-readout").textContent =
+          "基频 220 Hz 固定。高次振幅和为 " + sumHi.toFixed(2) +
+          "。" + (sumHi < 0.35 ? "偏闷。" : sumHi > 1.0 ? "偏亮。" : "介于闷与亮之间。") +
+          "完整 dB 谱与试听请运行脚本。";
+      }
+
+      function setVals(a2, a3, a4) {
+        document.getElementById("h2").value = String(a2);
+        document.getElementById("h3").value = String(a3);
+        document.getElementById("h4").value = String(a4);
+        draw();
+      }
+
+      ["h2", "h3", "h4"].forEach(function (id) {
+        document.getElementById(id).addEventListener("input", draw);
+      });
+      document.getElementById("timbre-reset").addEventListener("click", function () {
+        setVals(0.4, 0.3, 0.2);
+      });
+      document.getElementById("timbre-dull").addEventListener("click", function () {
+        setVals(0.15, 0.05, 0);
+      });
+      document.getElementById("timbre-bright").addEventListener("click", function () {
+        setVals(0.55, 0.45, 0.35);
+      });
+      window.addEventListener("resize", draw);
+      draw();
+    })();
+  </script>
+</body>
+</html>

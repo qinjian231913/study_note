@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 4 篇 · 傅里叶级数</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        傅里叶变换 · 音视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="00-sine.html">第 0 篇</a>
+        <a href="01-sampling.html">第 1 篇</a>
+        <a href="02-sum.html">第 2 篇</a>
+        <a href="03-spectrum.html">第 3 篇</a>
+        <a href="04-series.html" aria-current="page">第 4 篇</a>
+        <a href="05-dft.html">第 5 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 4 篇 · 周期信号 · 约 50 分钟</p>
+    <h1>傅里叶级数</h1>
+    <p class="lede">第 2 篇的方波配方是写好的。这一篇换一个问题：一段每秒都重复的波形，它的系数可以算出来。算法只有一句：和标准正弦有多齐。算完再看跳变旁边那一截为什么还在。</p>
+    <div class="meta">
+      <span class="pill">先读：第 2 篇、第 3 篇</span>
+      <span class="pill">会看到系数和过冲</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#period">周期和基频</a></li>
+        <li><a href="#align">系数是对齐程度</a></li>
+        <li><a href="#square">方波只留下奇数倍</a></li>
+        <li><a href="#gibbs">跳变旁边的过冲</a></li>
+        <li><a href="#try">在网页里加项数</a></li>
+        <li><a href="#hear">听 5 项和 40 项</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改项数</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="period">周期和基频</h2>
+    <p>方波每 1 秒重复一次。这段重复的长度叫<strong>周期</strong>，记作 T。基频是</p>
+    <p class="formula">f₀ = 1/T</p>
+    <p>T = 1 秒时，f₀ = 1 Hz。2 Hz、3 Hz、4 Hz 在 1 秒里正好走完整数圈，下一秒会照原样再来一遍，所以它们可以拿来拼这个周期的波形。1.5 Hz 在第二秒会上下翻转，拼不出「每一秒都一样」的形状。</p>
+    <figure>
+      <img src="assets/figures/ch04_period.png" alt="1 Hz 的第二秒重复第一秒，1.5 Hz 的第二秒上下翻转">
+      <figcaption>图 4-1　青色是第一秒，橙色是第二秒，虚线在 1 秒处。上图 1 Hz，两秒的形状对得上。下图 1.5 Hz，第二秒先往下走，和第一秒对不上。</figcaption>
+    </figure>
+    <p>所以傅里叶级数的频率是 f₀、2f₀、3f₀…… 第 2 篇方波用的 1 倍、3 倍、5 倍，就是这里的 1 Hz、3 Hz、5 Hz。T 若改成 0.5 秒，基频就是 2 Hz，整数倍跟着变成 2 Hz、4 Hz、6 Hz。</p>
+
+    <h2 id="align">系数是对齐程度</h2>
+    <p>一条周期波形写成这些正弦、余弦的和：</p>
+    <p class="formula">y(t) = a₀/2 + Σ (aₙ cos(2π n f₀ t) + bₙ sin(2π n f₀ t))</p>
+    <p>Σ 表示 n = 1、2、3…… 都加进去。每个字母都是一个能算的数：</p>
+    <ul>
+      <li>a₀/2 是一个周期里的平均高度。方波上、下各一半，平均是 0，所以 a₀ = 0。</li>
+      <li>aₙ 表示波形和「n 倍余弦」有多齐。</li>
+      <li>bₙ 表示波形和「n 倍正弦」有多齐。</li>
+    </ul>
+    <p>算法：把波形和这条标准波逐点相乘，在一个周期里求平均，再乘 2。乘 2 是因为正弦自己和自己相乘，平均正好是 1/2；乘完 2，振幅是多少，系数就是多少。</p>
+    <p><strong>算例。</strong> y = 0.8 sin(2π t)，T = 1。它和自己的 1 Hz 正弦相乘，平均是 0.8 × 1/2 = 0.4，再乘 2，得到 b₁ = 0.8。和余弦相乘会正负抵消，a₁ = 0。和 2 Hz 正弦相乘，平均也是 0，b₂ = 0。</p>
+    <figure>
+      <img src="assets/figures/ch04_calibrate.png" alt="振幅 0.8 的正弦，以及只有 b1 等于 0.80 的一根柱">
+      <figcaption>图 4-2　上图是时域。下图是算出来的系数：橙色 b₁ = 0.80，和振幅一样高。余弦系数和 2、3、4 倍的正弦系数都贴在 0 上。</figcaption>
+    </figure>
+
+    <h2 id="square">方波只留下奇数倍</h2>
+    <p>把第 2 篇那个方波送进同一个算法。先看相乘以后的面积。</p>
+    <figure>
+      <img src="assets/figures/ch04_align.png" alt="方波与 1 Hz、2 Hz 正弦相乘。1 Hz 的乘积都在中线以上，2 Hz 的乘积正负面积抵消">
+      <figcaption>图 4-3　左列和 1 Hz 相乘，乘积都在中线以上，平均约 0.64，乘 2 得 1.27。右列和 2 Hz 相乘，前半秒里正弦自己先正后负，面积抵消，平均是 0，乘 2 仍是 0。</figcaption>
+    </figure>
+    <p>1 Hz 正弦在方波为正的那半秒里也大体为正，在方波为负的那半秒里也大体为负，乘积就一直是正的。2 Hz 正弦在方波的正半秒里就完成了「上又下」，自己抵消了。3 Hz、5 Hz 和 1 Hz 一样对得齐，只是更矮；4 Hz、6 Hz 和 2 Hz 一样抵消。余弦和这个方波相乘，一个周期里也会正负抵消。</p>
+    <div class="table-scroll">
+      <table>
+        <caption>方波前几项：相乘再平均，再乘 2。配方是第 2 篇写过的 (4/π)/n，偶数倍为 0。</caption>
+        <thead>
+          <tr><th>n</th><th class="num">余弦 an</th><th class="num">正弦 bn</th><th class="num">第 2 篇配方</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>1</td><td class="num">0</td><td class="num">1.273</td><td class="num">4/π ≈ 1.273</td></tr>
+          <tr><td>2</td><td class="num">0</td><td class="num">0</td><td class="num">0</td></tr>
+          <tr><td>3</td><td class="num">0</td><td class="num">0.424</td><td class="num">4/(3π) ≈ 0.424</td></tr>
+          <tr><td>4</td><td class="num">0</td><td class="num">0</td><td class="num">0</td></tr>
+          <tr><td>5</td><td class="num">0</td><td class="num">0.255</td><td class="num">4/(5π) ≈ 0.255</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <figure>
+      <img src="assets/figures/ch04_coeff.png" alt="余弦系数都在 0 附近，正弦系数的奇数倍与圆点标出的配方重合">
+      <figcaption>图 4-4　上图余弦系数贴着 0。下图橙色是算出来的 bn，黑点是第 2 篇的配方。1、3、5、7 倍重合，2、4、6、8 倍都是 0。</figcaption>
+    </figure>
+    <p>第 3 篇的频谱柱，到这里有了算法：柱高就是这些系数的绝对值。这个方波的余弦系数是 0，频谱上只剩正弦那一排奇数倍。把方波在时间上挪一挪，余弦系数就不再全是 0；第 3 篇已经见过，同一组振幅、不同的起点，波形会变。</p>
+
+    <h2 id="gibbs">跳变旁边的过冲</h2>
+    <p>系数知道了，把前若干项加回去，就是第 2 篇看过的那条橙色曲线。项数增加，平台中段靠近 1。跳变旁边仍有一截冲过平台。这一截叫<strong>吉布斯现象</strong>。</p>
+    <figure>
+      <img src="assets/figures/ch04_gibbs.png" alt="80 项的方波在跳变处仍有尖角；放大后 5 项、20 项、80 项的最高点都靠近 1.18">
+      <figcaption>图 4-5　上图是前 80 项的一整秒，跳变两侧各有一小截尖角。下图放大最开头的 0.1 秒：5 项、20 项、80 项的最高点都大约是 1.18。项数越多，这个尖角越窄，也越靠近 0 秒。青色虚线是平台 1。</figcaption>
+    </figure>
+    <p>方波从 −1 跳到 1，跳变高度是 2。过冲大约是跳变高度的 9%，也就是 0.18 左右，所以最高点停在大约 1.18。5 项时这个最高点在 0.05 秒，20 项时在 0.012 秒，80 项时在 0.003 秒。高度几乎不动。</p>
+    <p>只加 1 项时，最高点大约是 1.27，那是整条正弦的波峰，落在 0.25 秒，还不是这截窄尖角。</p>
+
+    <h2 id="try">在网页里加项数</h2>
+    <p>横轴会跟着项数缩短，让尖角留在画面里。青色线是平台 1，灰色虚线是 1.18。下面只画到 15 倍；更高的奇数倍更矮，已经加进上面的曲线。偶数倍的系数是 0，这里不画柱。</p>
+    <div class="playground">
+      <canvas id="gibbs-demo" class="demo stack" width="820" height="460" aria-label="不同项数的方波级数，以及奇数倍系数"></canvas>
+      <div class="controls">
+        <label for="n-terms">项数</label>
+        <input id="n-terms" type="range" min="1" max="40" step="1" value="5">
+        <output id="n-terms-out" for="n-terms">5</output>
+      </div>
+      <div class="actions">
+        <button type="button" id="gibbs-reset">恢复初始</button>
+      </div>
+      <p class="readout" id="gibbs-readout" aria-live="polite"></p>
+    </div>
+    <p>先停在 5 项，看最高点大约 1.18，位置在 0.05 秒。再拖到 20、40：尖角变窄，往 0 秒靠，高度仍在 1.18 附近。拖回 1 项时，最高点变成大约 1.27，在 0.25 秒。</p>
+
+    <h2 id="hear">听 5 项和 40 项</h2>
+    <p>图用 1 Hz，是为了看清尖角。声音把基频放到 220 Hz。5 项最高到 1980 Hz，40 项最高到 17380 Hz，仍低于采样率的一半。耳朵主要听到多出来的高次谐波：40 项更尖、更亮。过冲的高度要看图。</p>
+    <p>前 5 项。</p>
+    <audio controls src="assets/audio/ch04_square_5.wav"></audio>
+    <p>前 40 项。</p>
+    <audio controls src="assets/audio/ch04_square_40.wav"></audio>
+
+    <h2 id="run">运行脚本</h2>
+    <p>一个周期被切成很多小段，时间取每段中点。系数就是相乘、求和、再乘 2：</p>
+    <pre><code>dt = t[1] - t[0]
+# T 是周期。n = 1, 2, 3, ...
+bn = 2 * np.sum(y * np.sin(2 * np.pi * n * t / T)) * dt / T
+an = 2 * np.sum(y * np.cos(2 * np.pi * n * t / T)) * dt / T</code></pre>
+    <p>完整脚本在 <a href="code/ch04_series.py"><code>code/ch04_series.py</code></a>。课文里的 80 项图不读文件顶部的项数。</p>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <pre class="terminal"><code>python code/ch04_series.py</code></pre>
+      <p>终端里应出现「自检通过」，以及「5、20、80 项在跳变旁的最高点分别约为 1.18、1.18、1.18」。还会打印前 8 个系数，bn 应和第 2 篇配方一致。课文图是 <code>ch04_period.png</code>、<code>ch04_calibrate.png</code>、<code>ch04_align.png</code>、<code>ch04_coeff.png</code>、<code>ch04_gibbs.png</code>。<code>ch04_my_gibbs.png</code> 和 <code>ch04_square_mine.wav</code> 只跟随 <code>N_TERMS</code>。</p>
+    </div>
+    <div class="callout note">
+      <p>若终端中文是乱码，先执行 <code>chcp 65001</code>。图和 wav 照样会保存。</p>
+    </div>
+
+    <h2 id="edit">改项数</h2>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>打开 <code>code/ch04_series.py</code>，把 <code>N_TERMS = 20</code> 改成 <code>5</code>，运行。打开 <code>ch04_my_gibbs.png</code>：最高点仍约 1.18，位置大约在 0.05 秒，尖角比较宽。刷新本页听 <code>ch04_square_mine.wav</code>。</li>
+        <li>把 <code>N_TERMS</code> 改成 <code>40</code>，再运行。尖角更窄，更靠近 0 秒，高度仍约 1.18。听起来比 5 项更尖。</li>
+        <li>做完改回 <code>20</code>，再运行一次。</li>
+      </ol>
+    </div>
+    <figure>
+      <img src="assets/figures/ch04_my_gibbs.png" alt="20 项方波在跳变后的尖角，最高点标在大约 1.18">
+      <figcaption>图 4-6　默认 20 项。黑点是跳变之后的最高点，大约 1.18，在 0.012 秒。青色虚线是平台 1，灰色虚线是 1.18。</figcaption>
+    </figure>
+    <p>你的声音：</p>
+    <audio controls src="assets/audio/ch04_square_mine.wav"></audio>
+    <p><code>N_TERMS</code> 请用 1 到 40 的整数。40 项时最高谐波是 79 × 220 Hz，仍低于采样率的一半。</p>
+
+    <h2 id="check">自测</h2>
+    <details class="quiz">
+      <summary>1. 周期 T = 1 秒时，基频是多少？1.5 Hz 能不能用来拼这个周期的波形？</summary>
+      <p>基频 f₀ = 1/T = 1 Hz。配方里用 1 Hz、2 Hz、3 Hz 这样的整数倍。1.5 Hz 的第二秒是第一秒的上下翻转，拼不出每一秒都一样的形状。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. 振幅 0.8 的 1 Hz 正弦，b₁ 和 a₁ 各是多少？方波的 b₁、b₂ 呢？</summary>
+      <p>b₁ = 0.8，a₁ = 0。方波的 b₁ = 4/π ≈ 1.273，b₂ = 0。b₁ 来自图 4-3 那个平均 0.64 再乘 2。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. 项数从 5 加到 80，跳变旁边的最高点怎么变？</summary>
+      <p>高度停在大约 1.18，位置从大约 0.05 秒挪到大约 0.003 秒，尖角变窄。平台中段则靠近 1。这一截过冲叫吉布斯现象。只加 1 项时的 1.27 是正弦波峰，落在 0.25 秒。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>下一篇把同样的「对齐」做成离散傅里叶变换：N 个点进去，N 个频率格子出来，并手算一个很小的例子。</p>
+    <p><a href="05-dft.html">第 5 篇 · 离散傅里叶变换</a></p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="03-spectrum.html">上一篇</a>
+      <a href="05-dft.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var INK = "#1c1915";
+      var MUTED = "#5c564c";
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+
+      function surface(canvas) {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var width = canvas.clientWidth || 640;
+        var height = canvas.clientHeight || 460;
+        var pw = Math.round(width * dpr);
+        var ph = Math.round(height * dpr);
+        if (canvas.width !== pw || canvas.height !== ph) {
+          canvas.width = pw;
+          canvas.height = ph;
+        }
+        var ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(0, 0, width, height);
+        return { ctx: ctx, width: width, height: height };
+      }
+
+      function squarePartial(t, n) {
+        var total = 0;
+        var k;
+        for (k = 0; k < n; k++) {
+          var harmonic = 2 * k + 1;
+          total += Math.sin(2 * Math.PI * harmonic * t) / harmonic;
+        }
+        return (4 / Math.PI) * total;
+      }
+
+      function firstPeak(n) {
+        var span = Math.min(0.25, 3 / n);
+        var steps = 4000;
+        var bestT = span;
+        var bestY = -Infinity;
+        var i;
+        for (i = 1; i <= steps; i++) {
+          var t = span * i / steps;
+          var y = squarePartial(t, n);
+          if (y > bestY) {
+            bestY = y;
+            bestT = t;
+          }
+        }
+        return { t: bestT, y: bestY };
+      }
+
+      function windowSeconds(n) {
+        if (n <= 2) return 0.5;
+        return Math.max(0.05, Math.min(0.35, 6 / (4 * n)));
+      }
+
+      function drawCurve(ctx, xOf, yOf, fn, color, width, seconds) {
+        ctx.beginPath();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width;
+        var steps = 700;
+        var i;
+        for (i = 0; i <= steps; i++) {
+          var t = (i / steps) * seconds;
+          var x = xOf(t);
+          var y = yOf(fn(t));
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      }
+
+      function draw() {
+        var canvas = document.getElementById("gibbs-demo");
+        var box = surface(canvas);
+        var ctx = box.ctx;
+        var width = box.width;
+        var height = box.height;
+        var n = Number(document.getElementById("n-terms").value);
+        var seconds = windowSeconds(n);
+        var peak = firstPeak(n);
+        var timeTop = 26;
+        var timeBottom = Math.round(height * 0.52);
+        var freqTop = timeBottom + 46;
+        var freqBottom = height - 28;
+        var padL = 36;
+        var padR = 16;
+        var yMin = -0.15;
+        var yMax = 1.7;
+        var aMax = 1.55;
+        var fMax = 16;
+
+        function xTime(t) {
+          return padL + (t / seconds) * (width - padL - padR);
+        }
+        function yTime(y) {
+          return timeTop + (1 - (y - yMin) / (yMax - yMin)) * (timeBottom - timeTop);
+        }
+        function xFreq(f) {
+          return padL + (f / fMax) * (width - padL - padR);
+        }
+        function yFreq(a) {
+          return freqBottom - (a / aMax) * (freqBottom - freqTop);
+        }
+
+        ctx.strokeStyle = INK;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(padL, yTime(0));
+        ctx.lineTo(width - padR, yTime(0));
+        ctx.moveTo(padL, freqBottom);
+        ctx.lineTo(width - padR, freqBottom);
+        ctx.stroke();
+
+        ctx.save();
+        ctx.setLineDash([3, 3]);
+        ctx.strokeStyle = "#8d8376";
+        ctx.beginPath();
+        ctx.moveTo(padL, yTime(1.18));
+        ctx.lineTo(width - padR, yTime(1.18));
+        ctx.stroke();
+        ctx.restore();
+
+        ctx.strokeStyle = TEAL;
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(padL, yTime(1));
+        ctx.lineTo(width - padR, yTime(1));
+        ctx.stroke();
+
+        drawCurve(ctx, xTime, yTime, function (t) {
+          return squarePartial(t, n);
+        }, WAVE, 2.2, seconds * 0.999);
+
+        if (peak.t <= seconds) {
+          ctx.beginPath();
+          ctx.fillStyle = INK;
+          ctx.arc(xTime(peak.t), yTime(peak.y), 4, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        var harmonics = [1, 3, 5, 7, 9, 11, 13, 15];
+        var last = 2 * n - 1;
+        var i;
+        for (i = 0; i < harmonics.length; i++) {
+          var h = harmonics[i];
+          if (h > last) continue;
+          var amp = (4 / Math.PI) / h;
+          var left = xFreq(h - 0.28);
+          var right = xFreq(h + 0.28);
+          var top = yFreq(amp);
+          ctx.fillStyle = WAVE;
+          ctx.fillRect(left, top, Math.max(2, right - left), freqBottom - top);
+        }
+
+        ctx.fillStyle = MUTED;
+        ctx.font = "13px Microsoft YaHei, sans-serif";
+        ctx.textAlign = "left";
+        ctx.fillText("时域", padL, 16);
+        ctx.fillText("bn", padL, freqTop - 8);
+        ctx.fillText("0", padL, timeBottom + 16);
+        var endLabel = seconds.toFixed(2) + " 秒";
+        ctx.fillText(endLabel, width - padR - ctx.measureText(endLabel).width, timeBottom + 16);
+        ctx.fillText("1.18", width - padR - 36, yTime(1.18) - 4);
+
+        ctx.font = "12px Consolas, Microsoft YaHei, sans-serif";
+        ctx.textAlign = "center";
+        var ticks = [0, 1, 3, 5, 7, 9, 11, 13, 15];
+        for (i = 0; i < ticks.length; i++) {
+          var tick = ticks[i];
+          ctx.fillStyle = MUTED;
+          ctx.fillRect(xFreq(tick), freqBottom, 1, 4);
+          ctx.fillText(String(tick), xFreq(tick), height - 8);
+        }
+        ctx.textAlign = "left";
+
+        document.getElementById("n-terms-out").textContent = String(n);
+        var b3 = n >= 2 ? "0.42" : "尚未加入";
+        var where = n === 1
+          ? "这是基频正弦的波峰。"
+          : "尖角高度停在 1.18 附近。";
+        document.getElementById("gibbs-readout").textContent =
+          "前 " + n + " 项，最高到 " + last + " 倍。横轴画到 " + seconds.toFixed(3) +
+          " 秒。最高点约 " + peak.y.toFixed(2) + "，在 " + peak.t.toFixed(3) +
+          " 秒。" + where + "b1=1.27，b2=0，b3=" + b3 + "。青色线是平台 1。";
+      }
+
+      document.getElementById("n-terms").addEventListener("input", draw);
+      document.getElementById("gibbs-reset").addEventListener("click", function () {
+        document.getElementById("n-terms").value = "5";
+        draw();
+      });
+      window.addEventListener("resize", draw);
+      draw();
+    })();
+  </script>
+</body>
+</html>

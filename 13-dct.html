@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 13 篇 · 压缩为什么喜欢频域</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        傅里叶变换 · 音视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="12-video.html">第 12 篇</a>
+        <a href="13-dct.html" aria-current="page">第 13 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 13 篇 · 压缩直觉 · 约 50 分钟</p>
+    <h1>压缩为什么喜欢频域</h1>
+    <p class="lede">照片和声音直接存每个采样，文件很大。换成频率系数之后，许多格子接近 0，扔掉也几乎看不出——JPEG、MP3、视频编码都吃这一套。这一篇用 8×8 的 DCT 走通 JPEG 的核心一步，并点到听觉掩蔽与「只存差别」。</p>
+    <div class="meta">
+      <span class="pill">先读：第 10–12 篇</span>
+      <span class="pill">会看到量化出零、再重建</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#why">为什么频域好压</a></li>
+        <li><a href="#dct">DCT 和 DFT 差一句</a></li>
+        <li><a href="#jpeg">JPEG：一块 8×8 的路径</a></li>
+        <li><a href="#quality">质量与零的个数</a></li>
+        <li><a href="#mp3">MP3：听不见的可以少存</a></li>
+        <li><a href="#video">视频：运动与差别</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改 QUANT_SCALE</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="why">为什么频域好压</h2>
+    <p>自然图像里，相邻像素往往差不多。空域看起来「每个格子都重要」；换成频率之后，能量常常挤在<strong>低频</strong>（左上角），高频许多系数很小。把小的变成 0，再配合「一长串 0 很好编码」，体积就下来了。</p>
+    <figure>
+      <img src="assets/figures/ch13_energy.png" alt="左侧 8×8 像素铺满，右侧 DCT 幅度挤在左上角">
+      <figcaption>图 13-1　左：一块 8×8 像素，数值铺满。右：DCT 幅度——亮的多在左上角，右下角接近 0，这正是压缩喜欢的形状。</figcaption>
+    </figure>
+
+    <h2 id="dct">DCT 和 DFT 差一句</h2>
+    <p><strong>DFT</strong>（前面篇章的傅里叶变换）用复指数，系数可以是复数；<strong>DCT</strong>（离散余弦变换）只用余弦，系数是实数，并且特别擅长把「一块图像」的能量推进左上角。JPEG 选 DCT，不是因为 DFT 不能用，而是 DCT 对图像块更省事、更贴合后面的量化表。</p>
+
+    <h2 id="jpeg">JPEG：一块 8×8 的路径</h2>
+    <p>彩色 JPEG 还有色彩转换等步骤。核心的「有损」发生在每个 8×8 亮度块上：</p>
+    <ol>
+      <li><strong>DCT</strong>：8×8 像素 → 8×8 系数；</li>
+      <li><strong>量化</strong>：每个系数除以一张表里的步长，再四舍五入成整数——许多变成 0；</li>
+      <li>存这些整数（真正的文件里还会行程编码、熵编码）；</li>
+      <li>打开时<strong>反量化</strong>再 <strong>IDCT</strong>，得到近似的一块。</li>
+    </ol>
+    <p class="formula">像素 → DCT → ÷Q 并取整 → ×Q → IDCT → 近似像素</p>
+    <figure>
+      <img src="assets/figures/ch13_jpeg_path.png" alt="原块、DCT、量化、反量化、重建与误差六格">
+      <figcaption>图 13-2　课文默认 <code>QUANT_SCALE = 1</code>（约中等质量）。注意量化后有多少格是 0；重建和原块很像，右边是逐格误差。</figcaption>
+    </figure>
+    <p>零越多，后面编码越省。代价是重建有误差——压得越狠，块效应、模糊越明显。</p>
+
+    <h2 id="quality">质量与零的个数</h2>
+    <p>量化表乘一个倍率 <code>QUANT_SCALE</code>：倍率越大，步长越大，四舍五入后零越多，文件越小，也越糊。</p>
+    <figure>
+      <img src="assets/figures/ch13_quality.png" alt="三种量化倍率下的重建块与零的个数">
+      <figcaption>图 13-3　同一块在倍率 0.5、1、3 下的重建。标题里写了零系数个数（分母 64）。</figcaption>
+    </figure>
+
+    <h2 id="mp3">MP3：听不见的可以少存</h2>
+    <p>声音压缩也爱频域，但多了一层<strong>听觉</strong>：很大声的音会掩蔽旁边较弱的音——耳朵听不清的细节，编码器可以少分配比特，甚至丢掉。</p>
+    <p>脚本合成「响的 440 Hz + 很轻的 880 Hz」。时域上几乎只看见响音；语谱图上 880 那条很暗。真正的 MP3 有复杂的心理声学模型，这里只建立直觉，不实现模型。</p>
+    <figure>
+      <img src="assets/figures/ch13_masking.png" alt="时域波形与语谱图，440 亮、880 暗">
+      <figcaption>图 13-4　上：混合波形。下：简易语谱图。青色虚线 440，橙色虚线 880——880 又暗又容易被掩蔽。</figcaption>
+    </figure>
+    <p>对照听（轻音单独一段被放大，方便听清它本来存在）：</p>
+    <p>混合（响 + 轻）：</p>
+    <audio controls src="assets/audio/ch13_loud_quiet.wav"></audio>
+    <p>只有轻音（放大后）：</p>
+    <audio controls src="assets/audio/ch13_quiet_only.wav"></audio>
+
+    <h2 id="video">视频：运动与差别</h2>
+    <p>视频若每一帧都当一张 JPEG 存，会浪费：相邻帧往往几乎一样。编码器会估计块往哪边挪了（运动），然后主要编码<strong>残差</strong>（本帧 − 预测）。残差更稀、更小，再送进和 JPEG 类似的变换+量化。</p>
+    <figure>
+      <svg viewBox="0 0 720 220" role="img" aria-label="视频压缩：参考帧、运动箭头、残差、再变换量化">
+        <rect width="720" height="220" fill="#fffdf8"/>
+        <rect x="24" y="40" width="140" height="100" rx="8" fill="#e5f3f1" stroke="#0e6b66" stroke-width="2"/>
+        <text x="94" y="88" text-anchor="middle" font-family="Microsoft YaHei, sans-serif" font-size="15" fill="#1c1915">参考帧</text>
+        <text x="94" y="112" text-anchor="middle" font-family="Microsoft YaHei, sans-serif" font-size="12" fill="#5e584e">已编码的附近帧</text>
+        <circle cx="70" cy="70" r="14" fill="#c24d28" opacity="0.85"/>
+
+        <path d="M175 90 H250" stroke="#c24d28" stroke-width="3" fill="none" marker-end="url(#arrow)"/>
+        <text x="212" y="78" text-anchor="middle" font-family="Microsoft YaHei, sans-serif" font-size="12" fill="#c24d28">运动估计</text>
+
+        <rect x="260" y="40" width="140" height="100" rx="8" fill="#fde8df" stroke="#c24d28" stroke-width="2"/>
+        <text x="330" y="88" text-anchor="middle" font-family="Microsoft YaHei, sans-serif" font-size="15" fill="#1c1915">预测块</text>
+        <text x="330" y="112" text-anchor="middle" font-family="Microsoft YaHei, sans-serif" font-size="12" fill="#5e584e">挪位置后的拷贝</text>
+        <circle cx="318" cy="70" r="14" fill="#c24d28" opacity="0.85"/>
+
+        <text x="430" y="95" text-anchor="middle" font-family="Microsoft YaHei, sans-serif" font-size="22" fill="#0e6b66">−</text>
+
+        <rect x="450" y="40" width="100" height="100" rx="8" fill="#fbf1dc" stroke="#5e584e" stroke-width="2"/>
+        <text x="500" y="88" text-anchor="middle" font-family="Microsoft YaHei, sans-serif" font-size="15" fill="#1c1915">残差</text>
+        <text x="500" y="112" text-anchor="middle" font-family="Microsoft YaHei, sans-serif" font-size="12" fill="#5e584e">差别很小</text>
+
+        <path d="M560 90 H620" stroke="#0e6b66" stroke-width="3" fill="none" marker-end="url(#arrow2)"/>
+        <text x="590" y="78" text-anchor="middle" font-family="Microsoft YaHei, sans-serif" font-size="12" fill="#0e6b66">DCT+量化</text>
+
+        <rect x="630" y="55" width="70" height="70" rx="8" fill="#e5f3f1" stroke="#0e6b66" stroke-width="2"/>
+        <text x="665" y="95" text-anchor="middle" font-family="Microsoft YaHei, sans-serif" font-size="13" fill="#1c1915">少数字</text>
+
+        <text x="360" y="190" text-anchor="middle" font-family="Microsoft YaHei, sans-serif" font-size="13" fill="#5e584e">当前帧 ≈ 预测 + 残差。残差进频域后更容易出现大量的 0。</text>
+        <defs>
+          <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L6,3 L0,6 Z" fill="#c24d28"/>
+          </marker>
+          <marker id="arrow2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L6,3 L0,6 Z" fill="#0e6b66"/>
+          </marker>
+        </defs>
+      </svg>
+      <figcaption>图 13-5　视频压缩直觉（示意）：用参考帧挪出预测，只认真编码差别；差别再走变换与量化。</figcaption>
+    </figure>
+
+    <h2 id="run">运行脚本</h2>
+    <p>DCT 用 8×8 正交余弦矩阵左右乘，不另装科学库。脚本在 <a href="code/ch13_dct.py"><code>code/ch13_dct.py</code></a>。</p>
+    <pre><code>coeffs = C @ (block - 128) @ C.T          # DCT
+levels = np.round(coeffs / Q)             # 量化
+restored = C.T @ (levels * Q) @ C + 128   # 反量化 + IDCT</code></pre>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <pre class="terminal"><code>python code/ch13_dct.py</code></pre>
+      <p>终端应出现「自检通过」和零系数个数（例如约几十个 / 64）。课文图：<code>ch13_energy.png</code>、<code>ch13_jpeg_path.png</code>、<code>ch13_quality.png</code>、<code>ch13_masking.png</code>；音频在 <code>assets/audio/ch13_*.wav</code>。练习图是 <code>ch13_my_block.png</code>。</p>
+    </div>
+    <div class="callout note">
+      <p>若终端中文是乱码，先执行 <code>chcp 65001</code>。</p>
+    </div>
+
+    <h2 id="edit">改 QUANT_SCALE</h2>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>打开 <code>code/ch13_dct.py</code>，把 <code>QUANT_SCALE = 1.0</code> 改成 <code>0.4</code>，运行。打开 <code>ch13_my_block.png</code>：零应变少，重建更贴原块。</li>
+        <li>改成 <code>4.0</code> 再跑：零应明显变多，块更糊，误差图更花。</li>
+        <li>做完改回 <code>1.0</code>。</li>
+      </ol>
+    </div>
+    <figure>
+      <img src="assets/figures/ch13_my_block.png" alt="跟随 QUANT_SCALE 的 JPEG 一块路径图">
+      <figcaption>图 13-6　默认 <code>QUANT_SCALE = 1.0</code> 时你的整条路径图。看标题和「零=？」那一格。</figcaption>
+    </figure>
+
+    <h2 id="check">自测</h2>
+    <details class="quiz">
+      <summary>1. 为什么说频域「好压」？</summary>
+      <p>自然信号的能量常挤在较少的低频系数上，许多高频接近 0。变成 0 之后特别好编码，文件变小；代价是有损。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. DCT 相对 DFT，课文里强调的一句差别是什么？JPEG 一块的顺序是什么？</summary>
+      <p>DCT 系数是实数，更适合把图像块能量推进左上角。顺序：DCT → 量化（出许多 0）→（存储）→ 反量化 → IDCT。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. MP3 的掩蔽直觉、视频相对「每帧一张 JPEG」多做了什么？</summary>
+      <p>响音会掩蔽旁边的轻音，听不见的细节可以少存。视频用运动预测，主要编码帧间残差，再对残差做变换量化。</p>
+    </details>
+
+    <h2>整套读到这里</h2>
+    <p>从一条正弦，到频谱、滤波、图像、视频时间轴，再到压缩为何爱频率——主线是同一件事：把信号换成「每种变化各有多少」，再决定留下谁。若要从头复习，回到 <a href="index.html">目录</a>。</p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="12-video.html">上一篇</a>
+      <a href="index.html">目录</a>
+    </nav>
+  </div>
+</body>
+</html>

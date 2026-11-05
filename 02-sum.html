@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 2 篇 · 把复杂波形拆成纯音</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        傅里叶变换 · 音视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="00-sine.html">第 0 篇</a>
+        <a href="01-sampling.html">第 1 篇</a>
+        <a href="02-sum.html" aria-current="page">第 2 篇</a>
+        <a href="03-spectrum.html">第 3 篇</a>
+        <a href="04-series.html">第 4 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 2 篇 · 叠加 · 约 45 分钟</p>
+    <h1>把复杂波形拆成纯音</h1>
+    <p class="lede">一条看起来弯弯曲曲的波，可以是几条正弦在每个时刻把高度加起来。这一篇先加两条，再按一张固定配方把方波拼出来。</p>
+    <div class="meta">
+      <span class="pill">先读：第 0 篇、第 1 篇</span>
+      <span class="pill">会听到纯音和方波</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#add">同一时刻，高度相加</a></li>
+        <li><a href="#try-sum">在网页里叠两条波</a></li>
+        <li><a href="#hear">听 440 Hz 和 880 Hz</a></li>
+        <li><a href="#square">方波的配方</a></li>
+        <li><a href="#try-square">在网页里增加项数</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改项数</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="add">同一时刻，高度相加</h2>
+    <p>第 0 篇的一条正弦，在每个时刻只有一个高度。现在放上两条，规则只有一句：把同一时刻的两个高度加起来，得到新的高度。</p>
+    <p class="formula">y = A₁ sin(2π f₁ t) + A₂ sin(2π f₂ t)</p>
+    <p>这一篇两条波的相位都是 0，都从中线向上出发。相位以后仍可以改，这里先固定它，专心看相加。</p>
+    <p><strong>算例 1。</strong> A₁ = A₂ = 1，f₁ = 1 Hz，f₂ = 2 Hz，t = 0.25 秒。第一条的角度是 π/2，高度是 1。第二条的角度是 π，高度是 0。相加得 1。慢的那条在波峰，快的那条正好过零，结果就等于慢的那条。</p>
+    <p><strong>算例 2。</strong> 时间改成 0.125 秒。第一条高度是 sin(π/4) ≈ 0.707，第二条高度是 sin(π/2) = 1。相加约 1.707，比任何一条单独都高。</p>
+
+    <figure>
+      <img src="assets/figures/ch02_sum_slow.png" alt="1 Hz 与 2 Hz 分开画，以及两者相加">
+      <figcaption>图 2-1　上图 1 Hz，中图 2 Hz，下图是两者相加。虚线在 0.25 秒：中图过零，上图在波峰，下图的深色曲线也在高度 1。0.125 秒附近，深色曲线升到大约 1.7。</figcaption>
+    </figure>
+
+    <h2 id="try-sum">在网页里叠两条波</h2>
+    <p>第一条固定为 1 Hz、振幅 1。拖第二条的频率和振幅。纵轴固定在 −2.3 到 2.3，所以两条叠高时你能看见结果冒出去。</p>
+    <div class="playground">
+      <canvas id="sum-demo" class="demo" width="820" height="280" aria-label="两条正弦及其相加结果"></canvas>
+      <div class="controls">
+        <label for="f2">第二条频率</label>
+        <input id="f2" type="range" min="1" max="5" step="1" value="2">
+        <output id="f2-out" for="f2">2 Hz</output>
+        <label for="a2">第二条振幅</label>
+        <input id="a2" type="range" min="0" max="1" step="0.1" value="1">
+        <output id="a2-out" for="a2">1.0</output>
+      </div>
+      <div class="actions">
+        <button type="button" id="sum-reset">恢复初始</button>
+      </div>
+      <p class="readout" id="sum-readout" aria-live="polite"></p>
+    </div>
+    <p>先把第二条振幅拖到 0，深色曲线会和青色重合。再拖回 1，并把频率改成 3：1 秒里，第二条完成 3 次来回，相加后的形状又变了。</p>
+
+    <h2 id="hear">听 440 Hz 和 880 Hz</h2>
+    <p>图 2-1 用 1 Hz 和 2 Hz，是为了能数清来回。声音里用同样的比例：880 = 440 × 2。画出来仍然是「一条慢的加上一条快一倍的」，只是整段被压进几毫秒，耳朵才听得见。</p>
+    <figure>
+      <img src="assets/figures/ch02_sum_fast.png" alt="10 毫秒内的 440 Hz、880 Hz 以及两者相加">
+      <figcaption>图 2-2　10 毫秒里的 440 Hz 与 880 Hz。频率比仍是 1:2，相加的办法和图 2-1 相同。图上的振幅画成 1，是为了看清形状；下面的音频把每条的振幅放在 0.3，避免太响。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>播放前把音量调小。每段大约 1 秒，听到稳定的声音即可。</p>
+    </div>
+    <p>只有 440 Hz：</p>
+    <audio controls src="assets/audio/ch02_440.wav" preload="metadata">请打开 assets/audio/ch02_440.wav。</audio>
+    <p>只有 880 Hz。它高八度，听起来更高，仍是音名 A：</p>
+    <audio controls src="assets/audio/ch02_880.wav" preload="metadata">请打开 assets/audio/ch02_880.wav。</audio>
+    <p>440 Hz 加上 880 Hz。两倍频率叠在一起，听感像同一个音更亮：</p>
+    <audio controls src="assets/audio/ch02_440_plus_880.wav" preload="metadata">请打开 assets/audio/ch02_440_plus_880.wav。</audio>
+    <p>把 880 换成 660（440 的 1.5 倍）。这次能分开听出两个音高：</p>
+    <audio controls src="assets/audio/ch02_440_plus_660.wav" preload="metadata">请打开 assets/audio/ch02_440_plus_660.wav。</audio>
+
+    <h2 id="square">方波的配方</h2>
+    <p>方波在半个周期里停在高度 1，另外半个周期停在 −1。它也可以写成很多条正弦相加。配方有三条规矩：</p>
+    <ol>
+      <li>只加奇数倍：1 倍、3 倍、5 倍、7 倍…… 2 倍、4 倍这些偶数倍不放进去。</li>
+      <li>第 1 项叫基频，后面的叫谐波。3 倍那一项叫 3 次谐波，它的振幅是基频振幅的 1/3；5 次谐波是 1/5。</li>
+      <li>每一项再乘上 4/π（约 1.273），很多项加完以后，平台高度才靠近 1。</li>
+    </ol>
+    <figure>
+      <svg viewBox="0 0 680 236" role="img" aria-labelledby="harmTitle harmDesc">
+        <title id="harmTitle">基频、3 次谐波和 5 次谐波</title>
+        <desc id="harmDesc">三条正弦。基频最高，3 次谐波高度约三分之一且有三次来回，5 次谐波更矮且有五次来回。</desc>
+        <line x1="118" y1="48" x2="642" y2="48" stroke="#e6dccb"/>
+        <line x1="118" y1="130" x2="642" y2="130" stroke="#e6dccb"/>
+        <line x1="118" y1="200" x2="642" y2="200" stroke="#e6dccb"/>
+        <polyline fill="none" stroke="#0e6b66" stroke-width="2.4" stroke-linejoin="round" points="120.0,48.0 124.3,46.1 128.7,44.2 133.0,42.4 137.3,40.5 141.7,38.7 146.0,36.9 150.3,35.1 154.7,33.4 159.0,31.7 163.3,30.0 167.7,28.4 172.0,26.8 176.3,25.3 180.7,23.9 185.0,22.5 189.3,21.2 193.7,20.0 198.0,18.9 202.3,17.8 206.7,16.8 211.0,15.9 215.3,15.1 219.7,14.4 224.0,13.8 228.3,13.2 232.7,12.8 237.0,12.4 241.3,12.2 245.7,12.0 250.0,12.0 254.3,12.0 258.7,12.2 263.0,12.4 267.3,12.8 271.7,13.2 276.0,13.8 280.3,14.4 284.7,15.1 289.0,15.9 293.3,16.8 297.7,17.8 302.0,18.9 306.3,20.0 310.7,21.2 315.0,22.5 319.3,23.9 323.7,25.3 328.0,26.8 332.3,28.4 336.7,30.0 341.0,31.7 345.3,33.4 349.7,35.1 354.0,36.9 358.3,38.7 362.7,40.5 367.0,42.4 371.3,44.2 375.7,46.1 380.0,48.0 384.3,49.9 388.7,51.8 393.0,53.6 397.3,55.5 401.7,57.3 406.0,59.1 410.3,60.9 414.7,62.6 419.0,64.3 423.3,66.0 427.7,67.6 432.0,69.2 436.3,70.7 440.7,72.1 445.0,73.5 449.3,74.8 453.7,76.0 458.0,77.1 462.3,78.2 466.7,79.2 471.0,80.1 475.3,80.9 479.7,81.6 484.0,82.2 488.3,82.8 492.7,83.2 497.0,83.6 501.3,83.8 505.7,84.0 510.0,84.0 514.3,84.0 518.7,83.8 523.0,83.6 527.3,83.2 531.7,82.8 536.0,82.2 540.3,81.6 544.7,80.9 549.0,80.1 553.3,79.2 557.7,78.2 562.0,77.1 566.3,76.0 570.7,74.8 575.0,73.5 579.3,72.1 583.7,70.7 588.0,69.2 592.3,67.6 596.7,66.0 601.0,64.3 605.3,62.6 609.7,60.9 614.0,59.1 618.3,57.3 622.7,55.5 627.0,53.6 631.3,51.8 635.7,49.9 640.0,48.0"/>
+        <polyline fill="none" stroke="#c24d28" stroke-width="2.2" stroke-linejoin="round" points="120.0,130.0 124.3,128.1 128.7,126.3 133.0,124.6 137.3,122.9 141.7,121.5 146.0,120.3 150.3,119.3 154.7,118.6 159.0,118.1 163.3,118.0 167.7,118.1 172.0,118.6 176.3,119.3 180.7,120.3 185.0,121.5 189.3,122.9 193.7,124.6 198.0,126.3 202.3,128.1 206.7,130.0 211.0,131.9 215.3,133.7 219.7,135.4 224.0,137.1 228.3,138.5 232.7,139.7 237.0,140.7 241.3,141.4 245.7,141.9 250.0,142.0 254.3,141.9 258.7,141.4 263.0,140.7 267.3,139.7 271.7,138.5 276.0,137.1 280.3,135.4 284.7,133.7 289.0,131.9 293.3,130.0 297.7,128.1 302.0,126.3 306.3,124.6 310.7,122.9 315.0,121.5 319.3,120.3 323.7,119.3 328.0,118.6 332.3,118.1 336.7,118.0 341.0,118.1 345.3,118.6 349.7,119.3 354.0,120.3 358.3,121.5 362.7,122.9 367.0,124.6 371.3,126.3 375.7,128.1 380.0,130.0 384.3,131.9 388.7,133.7 393.0,135.4 397.3,137.1 401.7,138.5 406.0,139.7 410.3,140.7 414.7,141.4 419.0,141.9 423.3,142.0 427.7,141.9 432.0,141.4 436.3,140.7 440.7,139.7 445.0,138.5 449.3,137.1 453.7,135.4 458.0,133.7 462.3,131.9 466.7,130.0 471.0,128.1 475.3,126.3 479.7,124.6 484.0,122.9 488.3,121.5 492.7,120.3 497.0,119.3 501.3,118.6 505.7,118.1 510.0,118.0 514.3,118.1 518.7,118.6 523.0,119.3 527.3,120.3 531.7,121.5 536.0,122.9 540.3,124.6 544.7,126.3 549.0,128.1 553.3,130.0 557.7,131.9 562.0,133.7 566.3,135.4 570.7,137.1 575.0,138.5 579.3,139.7 583.7,140.7 588.0,141.4 592.3,141.9 596.7,142.0 601.0,141.9 605.3,141.4 609.7,140.7 614.0,139.7 618.3,138.5 622.7,137.1 627.0,135.4 631.3,133.7 635.7,131.9 640.0,130.0"/>
+        <polyline fill="none" stroke="#8a5a12" stroke-width="2" stroke-linejoin="round" points="120.0,200.0 124.3,198.1 128.7,196.4 133.0,194.9 137.3,193.8 141.7,193.0 146.0,192.8 150.3,193.0 154.7,193.8 159.0,194.9 163.3,196.4 167.7,198.1 172.0,200.0 176.3,201.9 180.7,203.6 185.0,205.1 189.3,206.2 193.7,207.0 198.0,207.2 202.3,207.0 206.7,206.2 211.0,205.1 215.3,203.6 219.7,201.9 224.0,200.0 228.3,198.1 232.7,196.4 237.0,194.9 241.3,193.8 245.7,193.0 250.0,192.8 254.3,193.0 258.7,193.8 263.0,194.9 267.3,196.4 271.7,198.1 276.0,200.0 280.3,201.9 284.7,203.6 289.0,205.1 293.3,206.2 297.7,207.0 302.0,207.2 306.3,207.0 310.7,206.2 315.0,205.1 319.3,203.6 323.7,201.9 328.0,200.0 332.3,198.1 336.7,196.4 341.0,194.9 345.3,193.8 349.7,193.0 354.0,192.8 358.3,193.0 362.7,193.8 367.0,194.9 371.3,196.4 375.7,198.1 380.0,200.0 384.3,201.9 388.7,203.6 393.0,205.1 397.3,206.2 401.7,207.0 406.0,207.2 410.3,207.0 414.7,206.2 419.0,205.1 423.3,203.6 427.7,201.9 432.0,200.0 436.3,198.1 440.7,196.4 445.0,194.9 449.3,193.8 453.7,193.0 458.0,192.8 462.3,193.0 466.7,193.8 471.0,194.9 475.3,196.4 479.7,198.1 484.0,200.0 488.3,201.9 492.7,203.6 497.0,205.1 501.3,206.2 505.7,207.0 510.0,207.2 514.3,207.0 518.7,206.2 523.0,205.1 527.3,203.6 531.7,201.9 536.0,200.0 540.3,198.1 544.7,196.4 549.0,194.9 553.3,193.8 557.7,193.0 562.0,192.8 566.3,193.0 570.7,193.8 575.0,194.9 579.3,196.4 583.7,198.1 588.0,200.0 592.3,201.9 596.7,203.6 601.0,205.1 605.3,206.2 609.7,207.0 614.0,207.2 618.3,207.0 622.7,206.2 627.0,205.1 631.3,203.6 635.7,201.9 640.0,200.0"/>
+        <text x="8" y="52" fill="#0e6b66" font-size="15" font-family="Microsoft YaHei, sans-serif">基频</text>
+        <text x="8" y="134" fill="#c24d28" font-size="15" font-family="Microsoft YaHei, sans-serif">3 次</text>
+        <text x="8" y="204" fill="#8a5a12" font-size="15" font-family="Microsoft YaHei, sans-serif">5 次</text>
+      </svg>
+      <figcaption>图 2-3　同一秒里的三条原料。基频来回 1 次。3 次谐波来回 3 次，高度约是基频的三分之一。5 次谐波来回 5 次，高度约是五分之一。图里先不乘 4/π，只比较它们彼此的高低。</figcaption>
+    </figure>
+    <p class="formula">y = (4/π) ( sin(2πft)/1 + sin(2π·3ft)/3 + sin(2π·5ft)/5 + … )</p>
+    <p>在 t = 0.25 秒、f = 1 Hz 时，第一项是 1，第二项是 sin(3π/2)/3 = −1/3。只加这两项：(4/π) × (1 − 1/3) ≈ 0.849。平台还没到 1，所以要继续加 5 倍、7 倍……</p>
+    <figure>
+      <img src="assets/figures/ch02_recipe.png" alt="奇数倍谐波的振幅柱状图，第一根最高并标为基频">
+      <figcaption>图 2-4　每根柱子都已经乘过 4/π。基频大约高 1.27，3 倍大约是它的三分之一，5 倍大约是五分之一。这张图先叫「配方」。<a href="03-spectrum.html">第 3 篇</a>会按频率再读它一次，并把它称为频谱。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch02_square_steps.png" alt="1 项、3 项、8 项和 20 项逐步拼出方波">
+      <figcaption>图 2-5　青色是目标方波，橙色是加出来的结果。1 项时波峰大约到 1.27，比平台 1 更高。3 项已经有了平顶。20 项的平台很平，拐角处仍会冲过目标一小截；项数再增加，这一截还在。<a href="04-series.html">第 4 篇</a>再专门看这个现象。</figcaption>
+    </figure>
+
+    <h2 id="try-square">在网页里增加项数</h2>
+    <p>拖动项数。1 项就是一条较高的正弦。项数增加后，平顶出现，拐角变陡。</p>
+    <div class="playground">
+      <canvas id="square-demo" class="demo" width="820" height="280" aria-label="用不同项数逼近方波"></canvas>
+      <div class="controls">
+        <label for="n-terms">项数</label>
+        <input id="n-terms" type="range" min="1" max="20" step="1" value="1">
+        <output id="n-terms-out" for="n-terms">1</output>
+      </div>
+      <div class="actions">
+        <button type="button" id="square-reset">恢复初始</button>
+      </div>
+      <p class="readout" id="square-readout" aria-live="polite"></p>
+    </div>
+
+    <p>声音用 220 Hz 当基频，比 440 Hz 低八度，这样多加几项也不会超出采样率能记下的范围。振幅再乘 0.4。先听 1 项，它就是纯音；再听 8 项，更快的谐波让声音更亮、更尖。</p>
+    <p>1 项：</p>
+    <audio controls src="assets/audio/ch02_square_1.wav" preload="metadata">请打开 assets/audio/ch02_square_1.wav。</audio>
+    <p>8 项：</p>
+    <audio controls src="assets/audio/ch02_square_8.wav" preload="metadata">请打开 assets/audio/ch02_square_8.wav。</audio>
+    <p>练习文件（改 <code>N_TERMS</code> 并重新运行后，刷新本页再听）：</p>
+    <audio controls src="assets/audio/ch02_square_mine.wav" preload="metadata">请打开 assets/audio/ch02_square_mine.wav。</audio>
+
+    <h2 id="run">运行脚本</h2>
+    <p>相加的计算就是把同一排时间上的正弦加起来。方波则按奇数倍做循环：</p>
+    <pre><code>y = A1 * np.sin(2 * np.pi * f1 * t) + A2 * np.sin(2 * np.pi * f2 * t)
+
+total = 0
+for k in range(n_terms):
+    harmonic = 2 * k + 1          # 1, 3, 5, ...
+    total = total + np.sin(2 * np.pi * harmonic * f * t) / harmonic
+y = (4 / np.pi) * total</code></pre>
+    <p><code>t</code> 是一整排时间时，这几行照样成立。完整脚本在 <a href="code/ch02_sum.py"><code>code/ch02_sum.py</code></a>，它还会把课文图和 wav 存下来。</p>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <pre class="terminal"><code>python code/ch02_sum.py</code></pre>
+      <p>终端里应出现「自检通过」，以及「0.125 秒时，1 Hz 与 2 Hz 相加约为 1.707」。生成的课文图是 <code>ch02_sum_slow.png</code>、<code>ch02_sum_fast.png</code>、<code>ch02_square_steps.png</code>、<code>ch02_recipe.png</code>。<code>ch02_my_square.png</code> 和 <code>ch02_square_mine.wav</code> 只跟随 <code>N_TERMS</code>。</p>
+    </div>
+    <div class="callout note">
+      <p>若终端中文是乱码，先执行 <code>chcp 65001</code>。图和 wav 照样会保存。</p>
+    </div>
+
+    <h2 id="edit">改项数</h2>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>打开 <code>code/ch02_sum.py</code>，把 <code>N_TERMS = 5</code> 改成 <code>1</code>，运行。打开 <code>ch02_my_square.png</code>：应只剩一条正弦，波峰高于青色方波。刷新本页听 <code>ch02_square_mine.wav</code>，它和第 1 项那段纯音相同。</li>
+        <li>把 <code>N_TERMS</code> 改成 <code>20</code>，再运行。平台更平，拐角更陡，拐角外侧仍有一小截过冲。听起来比 8 项更尖。</li>
+        <li>做完改回 <code>5</code>，再运行一次。</li>
+      </ol>
+    </div>
+    <p><code>N_TERMS</code> 请用 1 到 40 的整数。项数太大时，最高的谐波会接近采样率的一半，脚本会提示，听感也会走样。</p>
+
+    <h2 id="check">自测</h2>
+    <details class="quiz">
+      <summary>1. A₁ = A₂ = 1，f₁ = 1 Hz，f₂ = 2 Hz，相位都是 0。t = 0.25 秒时，相加的高度是多少？</summary>
+      <p>1。第一条在波峰，高度 1；第二条的角度是 π，高度 0。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. 方波配方里，3 次谐波的振幅是基频振幅的多少？</summary>
+      <p>三分之一。两边都乘过 4/π，比值仍是 1/3。图 2-4 里，3 倍那根柱子大约是 1 倍那根的三分之一高。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. 只保留 1 项时，图和声音各是什么？</summary>
+      <p>图是一条正弦，波峰大约到 1.27。声音是纯音。方波的平顶要等更多奇数倍加上去才出现。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>下一篇把同一段波再看一遍：横轴从时间换成频率。图 2-4 的柱子改称频谱，柱高是振幅，相位先不画进去。</p>
+    <p><a href="03-spectrum.html">第 3 篇 · 时域和频域</a></p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="01-sampling.html">上一篇</a>
+      <a href="03-spectrum.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var INK = "#1c1915";
+      var MUTED = "#5c564c";
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+
+      function surface(canvas) {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var width = canvas.clientWidth || 640;
+        var height = canvas.clientHeight || 280;
+        var pw = Math.round(width * dpr);
+        var ph = Math.round(height * dpr);
+        if (canvas.width !== pw || canvas.height !== ph) {
+          canvas.width = pw;
+          canvas.height = ph;
+        }
+        var ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(0, 0, width, height);
+        return { ctx: ctx, width: width, height: height };
+      }
+
+      function drawWave(ctx, xOf, yOf, fn, color, width) {
+        ctx.beginPath();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width;
+        var steps = 480;
+        var i;
+        for (i = 0; i <= steps; i++) {
+          var t = i / steps;
+          var x = xOf(t);
+          var y = yOf(fn(t));
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      }
+
+      function drawSum() {
+        var canvas = document.getElementById("sum-demo");
+        var box = surface(canvas);
+        var ctx = box.ctx;
+        var width = box.width;
+        var height = box.height;
+        var f2 = Number(document.getElementById("f2").value);
+        var a2 = Number(document.getElementById("a2").value);
+        var padL = 36;
+        var padR = 12;
+        var padT = 16;
+        var padB = 28;
+        var yMax = 2.3;
+        function xOf(t) { return padL + t * (width - padL - padR); }
+        function yOf(y) {
+          return padT + (1 - (y + yMax) / (2 * yMax)) * (height - padT - padB);
+        }
+        ctx.strokeStyle = "#c4b7a4";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(xOf(0.25), yOf(yMax));
+        ctx.lineTo(xOf(0.25), yOf(-yMax));
+        ctx.stroke();
+        ctx.strokeStyle = INK;
+        ctx.beginPath();
+        ctx.moveTo(padL, yOf(0));
+        ctx.lineTo(width - padR, yOf(0));
+        ctx.stroke();
+        drawWave(ctx, xOf, yOf, function (t) {
+          return Math.sin(2 * Math.PI * t);
+        }, TEAL, 1.6);
+        drawWave(ctx, xOf, yOf, function (t) {
+          return a2 * Math.sin(2 * Math.PI * f2 * t);
+        }, WAVE, 1.6);
+        drawWave(ctx, xOf, yOf, function (t) {
+          return Math.sin(2 * Math.PI * t) + a2 * Math.sin(2 * Math.PI * f2 * t);
+        }, INK, 2.4);
+        ctx.fillStyle = MUTED;
+        ctx.font = "13px Microsoft YaHei, sans-serif";
+        ctx.fillText("0", padL, height - 8);
+        ctx.fillText("1 秒", width - padR - 32, height - 8);
+        var y1 = Math.sin(2 * Math.PI * 0.25);
+        var y2 = a2 * Math.sin(2 * Math.PI * f2 * 0.25);
+        document.getElementById("f2-out").textContent = f2 + " Hz";
+        document.getElementById("a2-out").textContent = a2.toFixed(1);
+        document.getElementById("sum-readout").textContent =
+          "青色是 1 Hz、振幅 1。橙色是 " + f2 + " Hz、振幅 " + a2.toFixed(1) +
+          "。深色是相加。虚线在 0.25 秒：第一条高度 " + y1.toFixed(2) +
+          "，第二条高度 " + y2.toFixed(2) + "，相加 " + (y1 + y2).toFixed(2) + "。";
+      }
+
+      function squarePartial(t, n) {
+        var total = 0;
+        var k;
+        for (k = 0; k < n; k++) {
+          var harmonic = 2 * k + 1;
+          total += Math.sin(2 * Math.PI * harmonic * t) / harmonic;
+        }
+        return (4 / Math.PI) * total;
+      }
+
+      function drawSquare() {
+        var canvas = document.getElementById("square-demo");
+        var box = surface(canvas);
+        var ctx = box.ctx;
+        var width = box.width;
+        var height = box.height;
+        var n = Number(document.getElementById("n-terms").value);
+        var padL = 36;
+        var padR = 12;
+        var padT = 16;
+        var padB = 28;
+        var yMax = 1.6;
+        var seconds = 2;
+        function xOf(t) { return padL + (t / seconds) * (width - padL - padR); }
+        function yOf(y) {
+          return padT + (1 - (y + yMax) / (2 * yMax)) * (height - padT - padB);
+        }
+        ctx.strokeStyle = INK;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(padL, yOf(0));
+        ctx.lineTo(width - padR, yOf(0));
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.strokeStyle = TEAL;
+        ctx.lineWidth = 1.5;
+        var steps = 600;
+        var i;
+        for (i = 0; i <= steps; i++) {
+          var t = (i / steps) * seconds;
+          var frac = t - Math.floor(t);
+          var y = frac < 0.5 ? 1 : -1;
+          var x = xOf(t);
+          var py = yOf(y);
+          if (i === 0) ctx.moveTo(x, py);
+          else ctx.lineTo(x, py);
+        }
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.strokeStyle = WAVE;
+        ctx.lineWidth = 2;
+        for (i = 0; i <= steps; i++) {
+          var ts = (i / steps) * (seconds - 0.0001);
+          var xs = xOf(ts);
+          var ys = yOf(squarePartial(ts, n));
+          if (i === 0) ctx.moveTo(xs, ys);
+          else ctx.lineTo(xs, ys);
+        }
+        ctx.stroke();
+        ctx.fillStyle = MUTED;
+        ctx.font = "13px Microsoft YaHei, sans-serif";
+        ctx.fillText("0", padL, height - 8);
+        ctx.fillText("2 秒", width - padR - 36, height - 8);
+        var last = 2 * n - 1;
+        var ampLast = (4 / Math.PI) / last;
+        document.getElementById("n-terms-out").textContent = String(n);
+        var range = n === 1 ? "只有基频（1 倍）" : "从 1 倍直到 " + last + " 倍";
+        document.getElementById("square-readout").textContent =
+          "青色是目标方波，橙色是前 " + n + " 项相加，" + range +
+          "。最快这一项的振幅约 " + ampLast.toFixed(3) +
+          "。只有 1 项时，波峰约 1.27。";
+      }
+
+      document.getElementById("f2").addEventListener("input", drawSum);
+      document.getElementById("a2").addEventListener("input", drawSum);
+      document.getElementById("sum-reset").addEventListener("click", function () {
+        document.getElementById("f2").value = "2";
+        document.getElementById("a2").value = "1";
+        drawSum();
+      });
+      document.getElementById("n-terms").addEventListener("input", drawSquare);
+      document.getElementById("square-reset").addEventListener("click", function () {
+        document.getElementById("n-terms").value = "1";
+        drawSquare();
+      });
+      window.addEventListener("resize", function () {
+        drawSum();
+        drawSquare();
+      });
+      drawSum();
+      drawSquare();
+    })();
+  </script>
+</body>
+</html>

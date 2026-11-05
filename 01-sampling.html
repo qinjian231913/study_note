@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 1 篇 · 声音和图像都是一串数字</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        傅里叶变换 · 音视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="00-sine.html">第 0 篇</a>
+        <a href="01-sampling.html" aria-current="page">第 1 篇</a>
+        <a href="02-sum.html">第 2 篇</a>
+        <a href="03-spectrum.html">第 3 篇</a>
+        <a href="04-series.html">第 4 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 1 篇 · 信号是数字 · 约 50 分钟</p>
+    <h1>声音和图像都是一串数字</h1>
+    <p class="lede">第 0 篇的曲线看起来连绵不断。电脑文件里记下的是按顺序排好的数：声音是一排，灰度图是一张表，视频是按时间排好的很多张表。</p>
+    <div class="meta">
+      <span class="pill">先读：第 0 篇</span>
+      <span class="pill">会得到一个 wav 和一张 png</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#sample">采样：什么时刻记一笔</a></li>
+        <li><a href="#rate">采样率</a></li>
+        <li><a href="#quant">量化：这一笔记成哪个整数</a></li>
+        <li><a href="#try">在网页里看点和台阶</a></li>
+        <li><a href="#wav">写成可以播放的 wav</a></li>
+        <li><a href="#image">图像是一张数字表</a></li>
+        <li><a href="#video">视频多了一条时间</a></li>
+        <li><a href="#edit">改音高和采样率</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="sample">采样：什么时刻记一笔</h2>
+    <p>采样是沿着时间，每隔一小段就记下当时的强弱。电影胶片是一格一格的，放得够快就像在动；采样点放得够密，听起来就像连续的振动。</p>
+    <p>两个采样时刻之间，文件里没有第三个数。播放器按时间顺序把这些整数变成电压，再推动耳机。点与点之间怎么过渡，由播放设备完成。</p>
+
+    <figure>
+      <svg viewBox="0 0 700 220" role="img" aria-labelledby="sampleTitle sampleDesc">
+        <title id="sampleTitle">一条曲线上均匀分布的采样点</title>
+        <desc id="sampleDesc">青线是对照用的光滑曲线，橙点是准备保存的采样。</desc>
+        <line x1="48" y1="100" x2="660" y2="100" stroke="#1c1915" stroke-width="1.3"/>
+        <polyline fill="none" stroke="#0e6b66" stroke-width="2.5" stroke-linejoin="round" points="48.0,100.0 54.2,87.9 60.5,76.3 66.8,65.6 73.0,56.2 79.2,48.4 85.5,42.7 91.8,39.2 98.0,38.0 104.2,39.2 110.5,42.7 116.8,48.4 123.0,56.2 129.2,65.6 135.5,76.3 141.8,87.9 148.0,100.0 154.2,112.1 160.5,123.7 166.8,134.4 173.0,143.8 179.2,151.6 185.5,157.3 191.8,160.8 198.0,162.0 204.2,160.8 210.5,157.3 216.8,151.6 223.0,143.8 229.2,134.4 235.5,123.7 241.8,112.1 248.0,100.0 254.2,87.9 260.5,76.3 266.8,65.6 273.0,56.2 279.2,48.4 285.5,42.7 291.8,39.2 298.0,38.0 304.2,39.2 310.5,42.7 316.8,48.4 323.0,56.2 329.2,65.6 335.5,76.3 341.8,87.9 348.0,100.0 354.2,112.1 360.5,123.7 366.8,134.4 373.0,143.8 379.2,151.6 385.5,157.3 391.8,160.8 398.0,162.0 404.2,160.8 410.5,157.3 416.8,151.6 423.0,143.8 429.2,134.4 435.5,123.7 441.8,112.1 448.0,100.0 454.2,87.9 460.5,76.3 466.8,65.6 473.0,56.2 479.2,48.4 485.5,42.7 491.8,39.2 498.0,38.0 504.2,39.2 510.5,42.7 516.8,48.4 523.0,56.2 529.2,65.6 535.5,76.3 541.8,87.9 548.0,100.0 554.2,112.1 560.5,123.7 566.8,134.4 573.0,143.8 579.2,151.6 585.5,157.3 591.8,160.8 598.0,162.0 604.2,160.8 610.5,157.3 616.8,151.6 623.0,143.8 629.2,134.4 635.5,123.7 641.8,112.1 648.0,100.0"/>
+        <g fill="#c24d28" stroke="#fffdf8" stroke-width="1.5">
+          <circle cx="48.0" cy="100.0" r="4.5"/>
+          <circle cx="85.5" cy="42.7" r="4.5"/>
+          <circle cx="123.0" cy="56.2" r="4.5"/>
+          <circle cx="160.5" cy="123.7" r="4.5"/>
+          <circle cx="198.0" cy="162.0" r="4.5"/>
+          <circle cx="235.5" cy="123.7" r="4.5"/>
+          <circle cx="273.0" cy="56.2" r="4.5"/>
+          <circle cx="310.5" cy="42.7" r="4.5"/>
+          <circle cx="348.0" cy="100.0" r="4.5"/>
+          <circle cx="385.5" cy="157.3" r="4.5"/>
+          <circle cx="423.0" cy="143.8" r="4.5"/>
+          <circle cx="460.5" cy="76.3" r="4.5"/>
+          <circle cx="498.0" cy="38.0" r="4.5"/>
+          <circle cx="535.5" cy="76.3" r="4.5"/>
+          <circle cx="573.0" cy="143.8" r="4.5"/>
+          <circle cx="610.5" cy="157.3" r="4.5"/>
+        </g>
+        <text x="40" y="196" fill="#5c564c" font-size="14" font-family="Microsoft YaHei, sans-serif">0 秒</text>
+        <text x="620" y="196" fill="#5c564c" font-size="14" font-family="Microsoft YaHei, sans-serif">1 秒</text>
+        <text x="300" y="214" fill="#1c1915" font-size="15" font-family="Microsoft YaHei, sans-serif">时间</text>
+      </svg>
+      <figcaption>图 1-1　示意图。青线只供眼睛对照。橙点才是这一秒里准备留下的数，这里均匀放了 16 个，最后一个点在 1 秒之前。</figcaption>
+    </figure>
+
+    <figure>
+      <img src="assets/figures/ch01_sampling.png" alt="3 Hz 正弦上每秒 20 个采样点">
+      <figcaption>图 1-2　脚本画的对照：一条 3 Hz 的波，每秒留下 20 个橙点，时刻是 0、0.05、0.10……0.95 秒。t = 1.00 秒不再另记一笔。竖线帮助你看见每个点的高度。</figcaption>
+    </figure>
+
+    <h2 id="rate">采样率</h2>
+    <p>采样率是每秒记下多少个数，单位也是 Hz。采样率 44100 Hz 的意思是：每秒 44100 个数值，相邻两点相隔 1/44100 秒，大约 0.0000227 秒。</p>
+    <div class="table-scroll">
+      <table>
+        <caption>表 1-1　三个常见采样率</caption>
+        <thead>
+          <tr><th>采样率</th><th class="num">每秒个数</th><th>常出现在</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>8000 Hz</td><td class="num">8000</td><td>电话语音这一档的音质</td></tr>
+          <tr><td>44100 Hz</td><td class="num">44100</td><td>CD。本篇的课文音频用它</td></tr>
+          <tr><td>48000 Hz</td><td class="num">48000</td><td>视频和很多录音软件</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="callout note">
+      <p>先记住一句，理由放到后面再讲：每秒的点数要比你关心的最高频率的两倍还多，音高才稳得住。440 Hz 配 8000 已经够用，配 44100 更从容。练习时如果把频率设得不低于采样率的一半，脚本会提示你，听起来也会变成别的音高。</p>
+    </div>
+
+    <h2 id="quant">量化：这一笔记成哪个整数</h2>
+    <p>采样选定时刻。量化选定每个时刻允许写下的整数。wav 常用 16 位整数，范围从 −32768 到 32767，一共 65536 种不同的值。</p>
+    <p>脚本把强弱 1 对应到 32767，强弱 −1 对应到 −32767。公式是：文件里的整数 = 四舍五入(y × 32767)。16 位整数还能再多表示一个 −32768，这里为了正负对称，没有用到它。</p>
+    <p>真正的 wav 等级非常密，听起来仍是光滑的。下面故意只用很少的等级，是为了让台阶用眼睛就能看见。青色是原来的波，橙色是四舍五入之后的高度。</p>
+    <figure>
+      <img src="assets/figures/ch01_quant.png" alt="同一条正弦分别量化成 5 级和 17 级">
+      <figcaption>图 1-3　上图只有 5 种高度：−1、−0.5、0、0.5、1。下图有 17 种，台阶变密，形状靠近原来的正弦。这条演示波是 2 Hz。</figcaption>
+    </figure>
+
+    <h2 id="try">在网页里看点和台阶</h2>
+    <p>这个方框用一条 3 Hz 的波演示 1 秒，方便数点。写进 wav 的 440 Hz 在下一节。青线是对照。橙点是采样时刻的原始高度。橙色台阶是这些高度再四舍五入之后的结果。</p>
+    <div class="playground">
+      <canvas id="sample-demo" class="demo" width="820" height="280" aria-label="采样点数和量化级数可调的正弦波"></canvas>
+      <div class="controls">
+        <label for="n-sample">每秒点数</label>
+        <input id="n-sample" type="range" min="8" max="48" value="20" step="1">
+        <output id="n-sample-out" for="n-sample">20</output>
+        <label for="n-level">量化级数</label>
+        <input id="n-level" type="range" min="2" max="21" value="5" step="1">
+        <output id="n-level-out" for="n-level">5</output>
+      </div>
+      <div class="actions">
+        <button type="button" id="sample-reset">恢复初始</button>
+      </div>
+      <p class="readout" id="sample-readout" aria-live="polite"></p>
+      <div class="table-scroll" id="live-samples"></div>
+    </div>
+    <p>先把量化级数拖到最右，台阶会贴住橙点，方便只看采样有多稀。再把级数拖回 5，看四舍五入把点挪到了台阶上。最后把每秒点数加到 48，点和台阶会一起靠近青线。</p>
+
+    <h2 id="wav">写成可以播放的 wav</h2>
+    <p>第 0 篇的公式不变。差别是时间不再为了画图去取 2000 个随意的点，而是严格按采样率取值。默认参数：频率 440 Hz，采样率 44100，时长 1 秒，振幅 0.4。</p>
+    <pre><code>sample_rate = 44100
+frequency = 440.0
+duration = 1.0
+amplitude = 0.4
+
+count = int(sample_rate * duration)          # 44100 个数
+t = np.arange(count) / sample_rate           # 0, 1/44100, 2/44100, ...
+y = amplitude * np.sin(2 * np.pi * frequency * t)
+pcm = np.round(y * 32767).astype(np.int16)   # 写成 16 位整数</code></pre>
+    <p>振幅用 0.4，是为了离开最大音量一段距离。强弱 1 对应整数 32767，所以振幅 0.4 的波峰对应的整数大约是 0.4 × 32767 = 13107。</p>
+    <p>第 1 个点（序号 n = 1）可以手算核对。时间 t = 1/44100 ≈ 0.00002268 秒。y = 0.4 × sin(2π × 440 × t) ≈ 0.025059。整数 = 四舍五入(0.025059 × 32767) = 821。n = 0 时 t = 0，sin(0) = 0，所以第一个整数是 0。这和相位为 0 的正弦从中线起步是同一件事。</p>
+
+    <div class="table-scroll">
+      <table>
+        <caption>表 1-2　课文文件 note_440hz.wav 的前 8 个采样</caption>
+        <thead>
+          <tr>
+            <th class="num">n</th>
+            <th class="num">t（秒）</th>
+            <th class="num">小数 y</th>
+            <th class="num">文件中的整数</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td class="num">0</td><td class="num">0.00000000</td><td class="num">0.000000</td><td class="num">0</td></tr>
+          <tr><td class="num">1</td><td class="num">0.00002268</td><td class="num">0.025059</td><td class="num">821</td></tr>
+          <tr><td class="num">2</td><td class="num">0.00004535</td><td class="num">0.050020</td><td class="num">1639</td></tr>
+          <tr><td class="num">3</td><td class="num">0.00006803</td><td class="num">0.074785</td><td class="num">2450</td></tr>
+          <tr><td class="num">4</td><td class="num">0.00009070</td><td class="num">0.099255</td><td class="num">3252</td></tr>
+          <tr><td class="num">5</td><td class="num">0.00011338</td><td class="num">0.123336</td><td class="num">4041</td></tr>
+          <tr><td class="num">6</td><td class="num">0.00013605</td><td class="num">0.146932</td><td class="num">4815</td></tr>
+          <tr><td class="num">7</td><td class="num">0.00015873</td><td class="num">0.169951</td><td class="num">5569</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <p>仍在本文件夹的终端里运行：</p>
+      <pre class="terminal"><code>python code/ch01_signal.py</code></pre>
+      <p>终端会打印和表 1-2 相同的 8 行，并出现「自检通过」。生成的文件：</p>
+      <ul>
+        <li><code>assets/audio/note_440hz.wav</code>：课文音频，永远是 440 Hz、44100 Hz 采样、1 秒、振幅 0.4。</li>
+        <li><code>assets/audio/note_mine.wav</code>：跟随脚本顶部「改这里」。默认参数下，它和课文音频相同。</li>
+        <li>若干张图在 <code>assets/figures/</code>，渐变原图在 <code>assets/images/gradient.png</code>。</li>
+      </ul>
+    </div>
+
+    <p>播放前把系统音量调小。这是持续的纯音，听到稳定的一声就够了，听一两秒即可。若网页里的播放器没有声音，用系统播放器打开同一个 wav。</p>
+    <p>课文音频：</p>
+    <audio controls src="assets/audio/note_440hz.wav" preload="metadata">你的浏览器没有播放控件，请直接打开 assets/audio/note_440hz.wav。</audio>
+    <p>练习文件（改参数并重新运行后，刷新本页再听；若仍是旧声音，重新打开这一页）：</p>
+    <audio controls src="assets/audio/note_mine.wav" preload="metadata">请打开 assets/audio/note_mine.wav。</audio>
+
+    <p>1 秒的单声道 16 位音频，数据是 44100 × 2 = 88200 字节，再加上 44 字节的文件头，一共 88244 字节。资源管理器里大约显示为 86 KB。你可以右键查看文件大小，对一下这个数。</p>
+
+    <figure>
+      <img src="assets/figures/ch01_wav_zoom.png" alt="440 Hz 波形在 8 毫秒内的样子，以及开头 12 个采样点">
+      <figcaption>图 1-4　上图大约 8 毫秒，里面有 353 个采样，挤成一条线。440 Hz 的一个来回约 2.27 毫秒，所以这里能看到三个半来回，青色虚线是振幅 0.4。下图再放大开头 12 个点：它们都还在上升，因为 0.25 毫秒只是一个来回的开头。表 1-2 就是这 12 个点里的前 8 个。</figcaption>
+    </figure>
+
+    <h2 id="image">图像是一张数字表</h2>
+    <p>灰度图的每个像素是一个亮度。本篇用 0 到 255：0 是黑，255 是白。一个 8 位整数有 256 种可能，从 0 数到 255。彩色图的每个像素还有红、绿、蓝三个数，这一篇每个像素只留一个亮度。</p>
+    <p>下面这张图高 160、宽 480，一共 160 × 480 = 76800 个亮度。同一张图的原文件是 <a href="assets/images/gradient.png"><code>assets/images/gradient.png</code></a>，可以用看图软件打开：左边黑，右边白。</p>
+    <figure>
+      <img src="assets/figures/ch01_gradient.png" alt="从黑到白的横向渐变，旁边有亮度色标">
+      <figcaption>图 1-5　亮度只随左右位置变化。最左列是 0，最右列是 255。</figcaption>
+    </figure>
+
+    <p>480 列不方便逐个读。把同一件事收成 6 列，每一列一个整数：列号从 0 数起，亮度 = 列号 × 51。</p>
+    <div class="table-scroll">
+      <table class="pixels">
+        <caption>表 1-3　一行从黑到白。每一行都相同，因为上下没有变化。</caption>
+        <thead>
+          <tr>
+            <th></th><th>列 0</th><th>列 1</th><th>列 2</th><th>列 3</th><th>列 4</th><th>列 5</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th>任意一行</th>
+            <td style="background:#000;color:#fff">0</td>
+            <td style="background:#333;color:#fff">51</td>
+            <td style="background:#666;color:#fff">102</td>
+            <td style="background:#999;color:#1c1915">153</td>
+            <td style="background:#ccc;color:#1c1915">204</td>
+            <td style="background:#fff;color:#1c1915">255</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>亮度也可以同时沿两个方向变。下面每个格子的数 =（行号 + 列号）× 25，行和列都从 0 数起。左上角是 0，右下角是 250。</p>
+    <div class="table-scroll">
+      <table class="pixels">
+        <caption>表 1-4　6×6 的亮度。程序里通常先写行号，再写列号。</caption>
+        <thead>
+          <tr>
+            <th></th><th>列 0</th><th>列 1</th><th>列 2</th><th>列 3</th><th>列 4</th><th>列 5</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th>行 0</th>
+            <td style="background:#000;color:#fff">0</td>
+            <td style="background:#191919;color:#fff">25</td>
+            <td style="background:#323232;color:#fff">50</td>
+            <td style="background:#4b4b4b;color:#fff">75</td>
+            <td style="background:#646464;color:#fff">100</td>
+            <td style="background:#7d7d7d;color:#1c1915">125</td>
+          </tr>
+          <tr>
+            <th>行 1</th>
+            <td style="background:#191919;color:#fff">25</td>
+            <td style="background:#323232;color:#fff">50</td>
+            <td style="background:#4b4b4b;color:#fff">75</td>
+            <td style="background:#646464;color:#fff">100</td>
+            <td style="background:#7d7d7d;color:#1c1915">125</td>
+            <td style="background:#969696;color:#1c1915">150</td>
+          </tr>
+          <tr>
+            <th>行 2</th>
+            <td style="background:#323232;color:#fff">50</td>
+            <td style="background:#4b4b4b;color:#fff">75</td>
+            <td style="background:#646464;color:#fff">100</td>
+            <td style="background:#7d7d7d;color:#1c1915">125</td>
+            <td style="background:#969696;color:#1c1915">150</td>
+            <td style="background:#afafaf;color:#1c1915">175</td>
+          </tr>
+          <tr>
+            <th>行 3</th>
+            <td style="background:#4b4b4b;color:#fff">75</td>
+            <td style="background:#646464;color:#fff">100</td>
+            <td style="background:#7d7d7d;color:#1c1915">125</td>
+            <td style="background:#969696;color:#1c1915">150</td>
+            <td style="background:#afafaf;color:#1c1915">175</td>
+            <td style="background:#c8c8c8;color:#1c1915">200</td>
+          </tr>
+          <tr>
+            <th>行 4</th>
+            <td style="background:#646464;color:#fff">100</td>
+            <td style="background:#7d7d7d;color:#1c1915">125</td>
+            <td style="background:#969696;color:#1c1915">150</td>
+            <td style="background:#afafaf;color:#1c1915">175</td>
+            <td style="background:#c8c8c8;color:#1c1915">200</td>
+            <td style="background:#e1e1e1;color:#1c1915">225</td>
+          </tr>
+          <tr>
+            <th>行 5</th>
+            <td style="background:#7d7d7d;color:#1c1915">125</td>
+            <td style="background:#969696;color:#1c1915">150</td>
+            <td style="background:#afafaf;color:#1c1915">175</td>
+            <td style="background:#c8c8c8;color:#1c1915">200</td>
+            <td style="background:#e1e1e1;color:#1c1915">225</td>
+            <td style="background:#fafafa;color:#1c1915">250</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p>例如行 2、列 3： (2 + 3) × 25 = 125。脚本把这张表画成图，并另存成可以用记事本打开的 <a href="assets/figures/ch01_grid.csv"><code>assets/figures/ch01_grid.csv</code></a>。打开后看到的就是表 1-4 里的数字，逗号用来分列。</p>
+    <figure>
+      <img src="assets/figures/ch01_grids.png" alt="两张 6 乘 6 的灰度数字表">
+      <figcaption>图 1-6　上图对应表 1-3，每一行相同。下图对应表 1-4，左上角最暗，右下角最亮。</figcaption>
+    </figure>
+
+    <h2 id="video">视频多了一条时间</h2>
+    <p>一张图是一张数表。视频在这之外还有时间：第 0 秒一张，过一会儿再一张。每秒换多少张，叫帧率。电影常见每秒 24 帧，视频常见 25、30 或 60 帧。</p>
+    <p>下面 8 张是脚本生成的。白块往右走。相邻两帧相隔 125 毫秒，也就是 0.125 秒。第 7 帧在 875 毫秒；若按每秒 8 帧播放，下一帧才会落在 1000 毫秒。本篇把 8 张拼在一张图里，方便一眼看完。真正的视频文件会按时间顺序存放这些帧。</p>
+    <figure>
+      <img src="assets/figures/ch01_frames.png" alt="八帧画面，白块从左向右移动">
+      <figcaption>图 1-7　8 帧灰度画面。每一帧自己也是一张小数字表，只是这里把数画成了黑底和白块。</figcaption>
+    </figure>
+    <p>算一笔账就知道视频为什么占地方。100×100 的灰度图有 10000 个亮度。每秒 25 帧时，光是亮度数字就有 10000 × 25 = 250000 个，这还没算彩色，也没算压缩。压缩要等后面讲到频率之后再谈。</p>
+
+    <h2 id="edit">改音高和采样率</h2>
+    <p>打开 <a href="code/ch01_signal.py"><code>code/ch01_signal.py</code></a>。顶部「改这里」只影响 <code>note_mine.wav</code> 和 <code>ch01_my_zoom.png</code>。课文的 <code>note_440hz.wav</code> 每次仍按 440 Hz 重写。</p>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>把 <code>FREQUENCY = 440.0</code> 改成 <code>880.0</code>，运行脚本，刷新本页，听 <code>note_mine.wav</code>。880 Hz 比 440 Hz 高八度，仍是音名 A，听起来更高。再打开 <code>ch01_my_zoom.png</code>：同样大约 8 毫秒里，来回次数大约变成原来的两倍（880 × 0.008 ≈ 7 次）。</li>
+        <li>把频率改回 <code>440.0</code>，把 <code>SAMPLE_RATE = 44100</code> 改成 <code>8000</code>，再运行。1 秒现在只有 8000 个整数，文件大约是 8000 × 2 字节再加文件头。440 Hz 仍然清楚，因为 8000 比 440 的两倍大得多。放大图标题里的采样个数会从 353 变成 64。</li>
+        <li>做完把两个数改回 440 和 44100，再运行一次，练习文件就回到和课文一样的声音。</li>
+      </ol>
+    </div>
+    <div class="callout note">
+      <p>若终端中文是乱码，先执行 <code>chcp 65001</code>。数字、wav 和图片不受影响。听不到声音时，先把音量调到适中，再用系统播放器打开 wav。</p>
+    </div>
+
+    <h2 id="check">自测</h2>
+    <details class="quiz">
+      <summary>1. 采样率 48000 Hz、时长 3 秒的单声道声音，有多少个采样？</summary>
+      <p>48000 × 3 = 144000 个。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. 表 1-2 里 n = 0 的整数为什么是 0？</summary>
+      <p>t = 0 时，sin(0) = 0。再乘振幅 0.4 仍是 0，四舍五入后还是 0。这就是相位为 0 的正弦从中线起步。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. 一张 640×480 的灰度图有多少个亮度？若它是每秒 25 帧的灰度视频，1 秒大约有多少个亮度数字？</summary>
+      <p>一张图有 640 × 480 = 307200 个亮度。每秒 25 帧则是 307200 × 25 = 7680000 个。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>下一篇把两个正弦加在一起，看一条更复杂的曲线怎样由纯音叠出来，再用越来越多的谐波把方波拼出来。</p>
+    <p><a href="02-sum.html">第 2 篇 · 把复杂波形拆成纯音</a></p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="00-sine.html">上一篇</a>
+      <a href="index.html">目录</a>
+      <a href="02-sum.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var INK = "#1c1915";
+      var MUTED = "#5c564c";
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+      var TRUE_F = 3;
+
+      function surface(canvas) {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var width = canvas.clientWidth || 640;
+        var height = canvas.clientHeight || 280;
+        var pw = Math.round(width * dpr);
+        var ph = Math.round(height * dpr);
+        if (canvas.width !== pw || canvas.height !== ph) {
+          canvas.width = pw;
+          canvas.height = ph;
+        }
+        var ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(0, 0, width, height);
+        return { ctx: ctx, width: width, height: height };
+      }
+
+      function quantize(y, levels) {
+        var steps = levels - 1;
+        var unit = Math.round(((y + 1) / 2) * steps);
+        if (unit < 0) unit = 0;
+        if (unit > steps) unit = steps;
+        return (unit / steps) * 2 - 1;
+      }
+
+      function draw() {
+        var canvas = document.getElementById("sample-demo");
+        var box = surface(canvas);
+        var ctx = box.ctx;
+        var width = box.width;
+        var height = box.height;
+        var n = Number(document.getElementById("n-sample").value);
+        var levels = Number(document.getElementById("n-level").value);
+        var padL = 42;
+        var padR = 14;
+        var padT = 16;
+        var padB = 28;
+        var yMax = 1.35;
+
+        function xPix(t) { return padL + t * (width - padL - padR); }
+        function yPix(y) {
+          return padT + (1 - (y + yMax) / (2 * yMax)) * (height - padT - padB);
+        }
+        function wave(t) { return Math.sin(Math.PI * 2 * TRUE_F * t); }
+
+        ctx.strokeStyle = "#efe6d8";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(padL, yPix(0));
+        ctx.lineTo(width - padR, yPix(0));
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.strokeStyle = TEAL;
+        ctx.lineWidth = 2;
+        var steps = 400;
+        var i;
+        for (i = 0; i <= steps; i++) {
+          var t = i / steps;
+          var x = xPix(t);
+          var y = yPix(wave(t));
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.strokeStyle = WAVE;
+        ctx.lineWidth = 2;
+        var k;
+        for (k = 0; k < n; k++) {
+          var t0 = k / n;
+          var t1 = (k + 1) / n;
+          var q = quantize(wave(t0), levels);
+          var yq = yPix(q);
+          if (k === 0) ctx.moveTo(xPix(t0), yq);
+          else ctx.lineTo(xPix(t0), yq);
+          ctx.lineTo(xPix(t1), yq);
+        }
+        ctx.stroke();
+
+        var radius = n > 36 ? 2.4 : 4;
+        for (k = 0; k < n; k++) {
+          var ts = k / n;
+          ctx.fillStyle = WAVE;
+          ctx.beginPath();
+          ctx.arc(xPix(ts), yPix(wave(ts)), radius, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        ctx.fillStyle = MUTED;
+        ctx.font = "13px Microsoft YaHei, sans-serif";
+        ctx.fillText("0", padL, height - 8);
+        ctx.fillText("1 秒", width - padR - 32, height - 8);
+
+        document.getElementById("n-sample-out").textContent = String(n);
+        document.getElementById("n-level-out").textContent = String(levels);
+        document.getElementById("sample-readout").textContent =
+          "这一秒留下 " + n + " 个数，相邻两点相隔 " + (1 / n).toFixed(3) +
+          " 秒。每个数再被收成 " + levels + " 个等级中的一个。点数落在 0、1/" + n +
+          "、2/" + n + " … 秒，t = 1 秒不再另记。";
+
+        var html = "<table><caption>这 1 秒里的前 4 个点</caption><thead><tr>" +
+          "<th class=\"num\">k</th><th class=\"num\">t（秒）</th><th class=\"num\">原始高度</th><th class=\"num\">量化后</th>" +
+          "</tr></thead><tbody>";
+        var shown = Math.min(4, n);
+        for (k = 0; k < shown; k++) {
+          var tk = k / n;
+          var raw = wave(tk);
+          var qv = quantize(raw, levels);
+          html += "<tr><td class=\"num\">" + k + "</td><td class=\"num\">" + tk.toFixed(3) +
+            "</td><td class=\"num\">" + raw.toFixed(3) + "</td><td class=\"num\">" + qv.toFixed(3) + "</td></tr>";
+        }
+        html += "</tbody></table>";
+        document.getElementById("live-samples").innerHTML = html;
+      }
+
+      document.getElementById("n-sample").addEventListener("input", draw);
+      document.getElementById("n-level").addEventListener("input", draw);
+      document.getElementById("sample-reset").addEventListener("click", function () {
+        document.getElementById("n-sample").value = "20";
+        document.getElementById("n-level").value = "5";
+        draw();
+      });
+      window.addEventListener("resize", draw);
+      draw();
+    })();
+  </script>
+</body>
+</html>

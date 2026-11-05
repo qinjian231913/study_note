@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 11 篇 · 在频率上改照片</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        傅里叶变换 · 音视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="10-image-fft.html">第 10 篇</a>
+        <a href="11-image-filter.html" aria-current="page">第 11 篇</a>
+        <a href="12-video.html">第 12 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 11 篇 · 图像滤波 · 约 45 分钟</p>
+    <h1>在频率上改照片</h1>
+    <p class="lede">第 10 篇看见了二维频谱。这一篇动手改频谱：留下中心低频，照片变糊；抠掉中心，只剩边缘；挖掉条纹对应的那对亮点，周期干扰会淡下去。</p>
+    <div class="meta">
+      <span class="pill">先读：第 10 篇</span>
+      <span class="pill">会看到模糊、边缘和去条纹</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#idea">改频率就是乘一张掩膜</a></li>
+        <li><a href="#photo">一张合成「照片」</a></li>
+        <li><a href="#low">低通：模糊</a></li>
+        <li><a href="#high">高通：边缘</a></li>
+        <li><a href="#notch">陷波：去掉周期条纹</a></li>
+        <li><a href="#try">在网页里调半径</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改截止与陷波半径</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="idea">改频率就是乘一张掩膜</h2>
+    <p>做法和声音均衡一样，只是格子从一排变成一张表：</p>
+    <ol>
+      <li>对图像做二维 FFT，把低频摆到中心；</li>
+      <li>准备一张和频谱一样大的<strong>掩膜</strong>：要留的格子写 1，要扔的写 0；</li>
+      <li>频谱逐格相乘，再逆变换，得到新图像。</li>
+    </ol>
+    <p class="formula">新图 = IFFT2( FFT2(图) × 掩膜 )</p>
+    <p>中心附近是缓慢变化（天空、脸颊）；靠边是细密变化（头发丝、噪点、细条纹）。留下谁、挖掉谁，观感就不同。</p>
+
+    <h2 id="photo">一张合成「照片」</h2>
+    <p>为了不依赖外部文件，脚本画了一张 160×160 的灰阶风景，再叠一层周期为 8 像素的竖直条纹，模仿扫描干扰。</p>
+    <figure>
+      <img src="assets/figures/ch11_photo_stripes.png" alt="左：合成风景；右：叠上竖直周期条纹">
+      <figcaption>图 11-1　左是合成「照片」。右是叠上竖直条纹之后：明暗竖线按固定间距重复。</figcaption>
+    </figure>
+
+    <h2 id="low">低通：模糊</h2>
+    <p><strong>低通</strong>只留下频谱中心一个圆盘，半径叫截止半径。圆外置零。细节（高频）没了，画面变糊——和拍照时对焦没对准有点像，但这里是故意扔掉高频。</p>
+    <figure>
+      <img src="assets/figures/ch11_lowpass.png" alt="原图、低通后频谱、模糊结果三列">
+      <figcaption>图 11-2　课文用半径 18。中间是乘过掩膜后的频谱：只剩中心一团。右边山丘和太阳的轮廓还在，细纹理没了。</figcaption>
+    </figure>
+    <p>半径越小越糊；半径大到接近图像半宽，就几乎等于没滤。</p>
+
+    <h2 id="high">高通：边缘</h2>
+    <p><strong>高通</strong>反过来：挖掉中心，只留四周。缓慢的底子没了，跳变（边缘）留下来。结果整体偏暗、对比弱，脚本里做了拉伸，好让边缘看得见。</p>
+    <figure>
+      <img src="assets/figures/ch11_highpass.png" alt="原图、高通后频谱、边缘结果">
+      <figcaption>图 11-3　挖掉半径 10 的中心。右边能看见山脊和太阳边界，平坦天空几乎被掏空。</figcaption>
+    </figure>
+
+    <h2 id="notch">陷波：去掉周期条纹</h2>
+    <p>竖直条纹是一种很单纯的周期花样。它在频谱上不是糊成一片，而是在水平频率轴上左右各冒一个<strong>亮点</strong>（外加中心的直流）。周期 8、图宽 160 时，亮点大约离中心 160/8 = 20 格。</p>
+    <figure>
+      <img src="assets/figures/ch11_spectrum_peaks.png" alt="改前频谱有左右亮点，陷波后亮点被挖掉">
+      <figcaption>图 11-4　橙色圈标出条纹峰。左是改前，右是陷波挖洞之后。</figcaption>
+    </figure>
+    <p>只在这对峰周围挖一个小圆洞，其它频率原样留下——这叫<strong>陷波</strong>。风景大体还在，竖线淡下去。</p>
+    <figure>
+      <img src="assets/figures/ch11_notch.png" alt="带条纹、陷波频谱、去条纹结果">
+      <figcaption>图 11-5　左：带条纹。中：挖掉亮点后的频谱。右：条纹明显减弱。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>若条纹是斜的，峰就不在水平轴上，而在对应方向上。思路一样：在频谱上找到峰，挖掉它。</p>
+    </div>
+
+    <h2 id="try">在网页里调半径</h2>
+    <p>下面用一张简化的小图做示意：拖动半径，看低通圆盘变大变小。真正的风景图请跑脚本。</p>
+    <div class="playground">
+      <canvas id="lp-demo" class="demo" width="820" height="280" aria-label="低通半径示意"></canvas>
+      <div class="controls">
+        <label for="cutoff">低通半径</label>
+        <input id="cutoff" type="range" min="4" max="40" step="1" value="18">
+        <output id="cutoff-out" for="cutoff">18</output>
+      </div>
+      <p class="readout" id="lp-readout" aria-live="polite"></p>
+    </div>
+
+    <h2 id="run">运行脚本</h2>
+    <p>核心几行（二维 FFT、乘掩膜、逆变换）：</p>
+    <pre><code>shifted = np.fft.fftshift(np.fft.fft2(image))
+filtered = np.fft.ifft2(np.fft.ifftshift(shifted * mask)).real</code></pre>
+    <p>完整脚本在 <a href="code/ch11_image_filter.py"><code>code/ch11_image_filter.py</code></a>。课文图不读文件顶部的练习参数。</p>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <pre class="terminal"><code>python code/ch11_image_filter.py</code></pre>
+      <p>终端应出现「自检通过」，并保存 <code>ch11_photo_stripes.png</code>、<code>ch11_lowpass.png</code>、<code>ch11_highpass.png</code>、<code>ch11_notch.png</code>、<code>ch11_spectrum_peaks.png</code>。你的练习图是 <code>ch11_my_lowpass.png</code> 和 <code>ch11_my_notch.png</code>。</p>
+    </div>
+    <div class="callout note">
+      <p>若终端中文是乱码，先执行 <code>chcp 65001</code>。图照样会保存。</p>
+    </div>
+
+    <h2 id="edit">改截止与陷波半径</h2>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>打开 <code>code/ch11_image_filter.py</code>，把 <code>CUTOFF = 18</code> 改成 <code>8</code>，运行。打开 <code>ch11_my_lowpass.png</code>：应比课文更糊。</li>
+        <li>把 <code>CUTOFF</code> 改成 <code>35</code>，再运行：几乎看不出模糊。</li>
+        <li>把 <code>NOTCH_RADIUS</code> 改成 <code>1</code>：洞太小，条纹可能去不干净。改成 <code>6</code>：条纹更淡，但洞太大时风景细节也会伤一点。</li>
+        <li>做完改回 <code>CUTOFF = 18</code>、<code>NOTCH_RADIUS = 3</code>。</li>
+      </ol>
+    </div>
+    <figure>
+      <img src="assets/figures/ch11_my_lowpass.png" alt="跟随 CUTOFF 的低通练习图">
+      <figcaption>图 11-6　默认 <code>CUTOFF = 18</code> 时的低通练习图。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch11_my_notch.png" alt="跟随 NOTCH_RADIUS 的陷波练习图">
+      <figcaption>图 11-7　默认 <code>NOTCH_RADIUS = 3</code> 时的去条纹练习图。</figcaption>
+    </figure>
+
+    <h2 id="check">自测</h2>
+    <details class="quiz">
+      <summary>1. 低通留下频谱的哪一块？画面通常会怎样？</summary>
+      <p>留下中心附近的低频圆盘。细节变少，画面变模糊。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. 高通挖掉中心之后，更容易看见什么？</summary>
+      <p>边缘和细变化。平坦区域被掏空，轮廓留下来。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. 竖直周期条纹在频谱上长什么样？陷波做什么？</summary>
+      <p>在水平频率轴上左右各有一个亮点（外加中心直流）。陷波在亮点周围挖小洞，削弱这种周期干扰，同时尽量保留其它内容。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>照片是一张表。视频是按时间排好的很多张表。下一篇盯住某一个像素，看它随时间闪烁——那又变回第 3 篇熟悉的一维频谱。</p>
+
+    <p><a href=\"12-video.html\">第 12 篇 · 视频多出来的时间轴</a></p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="10-image-fft.html">上一篇</a>
+      <a href="12-video.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+      var MUTED = "#5c564c";
+      var canvas = document.getElementById("lp-demo");
+      var slider = document.getElementById("cutoff");
+      var out = document.getElementById("cutoff-out");
+      var readout = document.getElementById("lp-readout");
+      if (!canvas || !slider) return;
+
+      var size = 64;
+      var photo = new Float64Array(size * size);
+      for (var y = 0; y < size; y++) {
+        for (var x = 0; x < size; x++) {
+          var yy = y / (size - 1);
+          var xx = x / (size - 1);
+          var v = 90 + 70 * (1 - yy);
+          v += 40 * Math.exp(-((xx - 0.35) * (xx - 0.35)) / 0.08 - ((yy - 0.75) * (yy - 0.75)) / 0.05);
+          v += 50 * Math.exp(-((xx - 0.75) * (xx - 0.75) + (yy - 0.25) * (yy - 0.25)) / 0.02);
+          photo[y * size + x] = Math.max(0, Math.min(255, v));
+        }
+      }
+
+      function blurBox(src, radius) {
+        var dst = new Float64Array(src.length);
+        var r = Math.max(1, Math.round(radius / 6));
+        for (var y = 0; y < size; y++) {
+          for (var x = 0; x < size; x++) {
+            var sum = 0, n = 0;
+            for (var dy = -r; dy <= r; dy++) {
+              for (var dx = -r; dx <= r; dx++) {
+                var yy = y + dy, xx = x + dx;
+                if (yy < 0 || yy >= size || xx < 0 || xx >= size) continue;
+                sum += src[yy * size + xx];
+                n++;
+              }
+            }
+            dst[y * size + x] = sum / n;
+          }
+        }
+        return dst;
+      }
+
+      function draw() {
+        var radius = parseInt(slider.value, 10);
+        out.textContent = String(radius);
+        var blurred = blurBox(photo, radius);
+        var ctx = canvas.getContext("2d");
+        var w = canvas.width, h = canvas.height;
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(0, 0, w, h);
+
+        function putImage(data, x0, title) {
+          var cell = Math.floor(Math.min((w / 2 - 40) / size, (h - 50) / size));
+          var ox = x0, oy = 36;
+          for (var y = 0; y < size; y++) {
+            for (var x = 0; x < size; x++) {
+              var g = Math.round(data[y * size + x]);
+              ctx.fillStyle = "rgb(" + g + "," + g + "," + g + ")";
+              ctx.fillRect(ox + x * cell, oy + y * cell, cell, cell);
+            }
+          }
+          ctx.fillStyle = MUTED;
+          ctx.font = "14px Microsoft YaHei, sans-serif";
+          ctx.fillText(title, ox, 22);
+        }
+
+        putImage(photo, 30, "示意原图");
+        putImage(blurred, w / 2 + 10, "半径越大越糊（网页近似）");
+        readout.textContent = "半径 " + radius + "：课文脚本里对应频谱中心圆盘。网页用方框模糊近似观感，精确结果以 Python 图为准。";
+      }
+
+      slider.addEventListener("input", draw);
+      draw();
+    })();
+  </script>
+</body>
+</html>

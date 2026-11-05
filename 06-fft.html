@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 6 篇 · FFT、逆变换与窗</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        傅里叶变换 · 音视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="04-series.html">第 4 篇</a>
+        <a href="05-dft.html">第 5 篇</a>
+        <a href="06-fft.html" aria-current="page">第 6 篇</a>
+        <a href="07-audio.html">第 7 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 6 篇 · 算得快 · 约 55 分钟</p>
+    <h1>FFT、逆变换与窗</h1>
+    <p class="lede">第 5 篇的双重循环算出的就是 DFT。点数一大，循环会慢得明显。FFT 是同一答案的快速算法。这一篇先比速度，再走一遍 fft→ifft，然后看频谱为什么会「漏」到旁边格子，最后用窗和一次低通流水线听出差别。</p>
+    <div class="meta">
+      <span class="pill">先读：第 5 篇</span>
+      <span class="pill">会听到切掉高频</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#fft">FFT 是更快的 DFT</a></li>
+        <li><a href="#ifft">逆变换走一个来回</a></li>
+        <li><a href="#leak">频谱泄漏</a></li>
+        <li><a href="#hann">汉宁窗</a></li>
+        <li><a href="#pipe">流水线：切掉高频</a></li>
+        <li><a href="#try">在网页里看泄漏</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改截断格子</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="fft">FFT 是更快的 DFT</h2>
+    <p>快速傅里叶变换（FFT）不算另一种变换。它给出的 X[k] 与第 5 篇慢速双重循环相同，只是步数少得多。慢速大约按 N² 涨；常用 FFT 大约按 N log N 涨。</p>
+    <p>脚本里慢速 DFT 只比到 N = 1024。N = 4096 的双重循环会明显拖时间，所以那一档只测 <code>numpy.fft.fft</code>，并在图题里写明。</p>
+    <figure>
+      <img src="assets/figures/ch06_timing.png" alt="慢速 DFT 与 FFT 的耗时对比柱状图">
+      <figcaption>图 6-1　橙色是双重循环，青色是 fft。N 变大时橙色柱涨得更快。具体毫秒数随电脑而变，比的是趋势。</figcaption>
+    </figure>
+
+    <h2 id="ifft">逆变换走一个来回</h2>
+    <p>DFT 把时域变成频谱；逆变换（IDFT / <code>ifft</code>）把频谱变回时域。理想情况下：</p>
+    <p class="formula">ifft(fft(x)) ≈ x</p>
+    <p>差值来自浮点四舍五入，应接近 0，而不是「差不多像」。</p>
+    <figure>
+      <img src="assets/figures/ch06_roundtrip.png" alt="原信号与往返重建重合，差值贴零">
+      <figcaption>图 6-2　上图原信号与 fft→ifft 重叠。下图是差，纵轴刻度非常小。</figcaption>
+    </figure>
+
+    <h2 id="leak">频谱泄漏</h2>
+    <p>取 fs = 8000 Hz，N = 256，则 Δf = fs/N = 31.25 Hz。440 Hz 除以 31.25 得 14.08，落在两个格子之间。窗口外被硬切成 0，等于乘了一个矩形，频谱会摊到旁边——叫<strong>频谱泄漏</strong>。</p>
+    <p>若把频率改成正好 k × Δf（脚本里约 437.5 Hz），主峰更尖，旁瓣更矮。</p>
+    <figure>
+      <img src="assets/figures/ch06_leakage.png" alt="未对齐频率能量摊开，对齐频率主峰更尖">
+      <figcaption>图 6-3　上图 440 Hz 未对齐。下图改成格子中心频率。竖虚线标出音调位置。</figcaption>
+    </figure>
+
+    <h2 id="hann">汉宁窗</h2>
+    <p>加窗是在 FFT 之前先乘一段中间高、两端低的权重，减轻「硬切开」的锐沿。汉宁窗一行就能写完：</p>
+    <pre><code>w[n] = 0.5 - 0.5 * cos(2π n / (N - 1))</code></pre>
+    <p>泄漏的旁瓣会变矮，主瓣会变宽：频率定位稍糊一点，换来旁边更干净。</p>
+    <figure>
+      <img src="assets/figures/ch06_window.png" alt="汉宁窗形状，以及加窗前后频谱对照">
+      <figcaption>图 6-4　上图是窗本身。下图灰色未加窗，橙色乘汉宁窗：底座更低，峰更胖。</figcaption>
+    </figure>
+
+    <h2 id="pipe">流水线：切掉高频</h2>
+    <p>频谱不仅可以看，还可以改。课文示范：</p>
+    <ol>
+      <li>合成一段带谐波的亮音；</li>
+      <li><code>fft</code> 得到频谱；</li>
+      <li>把高于某个格子的正频率清零，并清掉对应的负频率镜像；</li>
+      <li><code>ifft</code> 回到时域，得到更闷的声音。</li>
+    </ol>
+    <figure>
+      <img src="assets/figures/ch06_filter.png" alt="低通前后的频谱与波形">
+      <figcaption>图 6-5　上图青色虚线是截断位置。下图时域细节变少。一秒 8000 点时，格子编号 k 大约就是频率（Hz）。</figcaption>
+    </figure>
+    <p>原来的亮音。</p>
+    <audio controls src="assets/audio/ch06_bright.wav"></audio>
+    <p>切掉高频之后。</p>
+    <audio controls src="assets/audio/ch06_dull.wav"></audio>
+
+    <h2 id="try">在网页里看泄漏</h2>
+    <p>下面用 N = 64、fs = 64，于是 Δf = 1 Hz。拖动频率：整数 Hz 时柱子更集中；稍微偏一点，能量会爬到邻居格子上。</p>
+    <div class="playground">
+      <canvas id="leak-demo" class="demo stack" width="820" height="420" aria-label="频率是否落在格子上时的幅度谱"></canvas>
+      <div class="controls">
+        <label for="tone-f">频率（Hz）</label>
+        <input id="tone-f" type="range" min="4" max="20" step="0.1" value="8">
+        <output id="tone-f-out" for="tone-f">8.0</output>
+      </div>
+      <div class="actions">
+        <button type="button" id="leak-reset">恢复初始</button>
+        <button type="button" id="leak-align">跳到最近格子</button>
+      </div>
+      <p class="readout" id="leak-readout" aria-live="polite"></p>
+    </div>
+
+    <h2 id="run">运行脚本</h2>
+    <p>完整脚本在 <a href="code/ch06_fft.py"><code>code/ch06_fft.py</code></a>。低通的核心是：</p>
+    <pre><code>X = np.fft.fft(x)
+X[cutoff + 1 : N - cutoff] = 0   # 正频率高端 + 负频率镜像一起清掉
+y = np.fft.ifft(X).real</code></pre>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <pre class="terminal"><code>python code/ch06_fft.py</code></pre>
+      <p>终端里应出现「自检通过」，以及往返误差、若干档计时。课文图是 <code>ch06_timing.png</code>、<code>ch06_roundtrip.png</code>、<code>ch06_leakage.png</code>、<code>ch06_window.png</code>、<code>ch06_filter.png</code>。声音是 <code>ch06_bright.wav</code>、<code>ch06_dull.wav</code>。你的结果只跟随 <code>CUTOFF_BIN</code>。</p>
+    </div>
+    <div class="callout note">
+      <p>若终端中文是乱码，先执行 <code>chcp 65001</code>。图和 wav 照样会保存。计时数字每台机器不同。</p>
+    </div>
+
+    <h2 id="edit">改截断格子</h2>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>打开 <code>code/ch06_fft.py</code>。默认 <code>CUTOFF_BIN = 400</code>。课文示范的截断不读这个数。</li>
+        <li>改成 <code>200</code>，运行。听 <code>ch06_filtered_mine.wav</code>，对照 <code>ch06_mine_spectrum.png</code>：保留的高频更少，更闷。</li>
+        <li>改成 <code>1000</code>，再运行：更亮，更接近原声。</li>
+        <li>做完改回 <code>400</code>。</li>
+      </ol>
+    </div>
+    <figure>
+      <img src="assets/figures/ch06_mine_spectrum.png" alt="你的截断频谱">
+      <figcaption>图 6-6　你的频谱。一秒 8000 点时，CUTOFF_BIN 约等于截止频率（Hz）。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch06_mine_wave.png" alt="你的截断时域对照">
+      <figcaption>图 6-7　你的时域对照。</figcaption>
+    </figure>
+    <p>你的声音：</p>
+    <audio controls src="assets/audio/ch06_filtered_mine.wav"></audio>
+
+    <h2 id="check">自测</h2>
+    <details class="quiz">
+      <summary>1. FFT 和 DFT 算的是同一种东西吗？差别在哪？</summary>
+      <p>是同一种变换。差别是算法快慢：FFT 用更少的乘法加法得到同一组 X[k]。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. fs = 8000，N = 256 时 Δf 是多少？为什么 440 Hz 容易泄漏？</summary>
+      <p>Δf = 8000/256 = 31.25 Hz。440 ÷ 31.25 = 14.08，不在整数格子上，再加上矩形截断，能量会摊到旁边。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. 汉宁窗和「切掉高频」各在解决什么问题？</summary>
+      <p>汉宁窗减轻截断造成的泄漏（旁瓣），主瓣会变宽。切掉高频是主动改频谱，再 ifft，用来得到更闷的音色。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>下一篇用合成的「真实一点」的声音看频谱：纯音、和弦、不同泛音比例的音色，并说明整段录音一次性 FFT 看不出音符的先后。</p>
+
+    <p><a href=\"07-audio.html\">第 7 篇 · 真实声音的频谱</a></p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="05-dft.html">上一篇</a>
+      <a href="07-audio.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var INK = "#1c1915";
+      var MUTED = "#5c564c";
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+      var N = 64;
+      var FS = 64;
+
+      function surface(canvas) {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var width = canvas.clientWidth || 640;
+        var height = canvas.clientHeight || 420;
+        var pw = Math.round(width * dpr);
+        var ph = Math.round(height * dpr);
+        if (canvas.width !== pw || canvas.height !== ph) {
+          canvas.width = pw;
+          canvas.height = ph;
+        }
+        var ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(0, 0, width, height);
+        return { ctx: ctx, width: width, height: height };
+      }
+
+      function dftMag(freq) {
+        var re = new Array(N);
+        var im = new Array(N);
+        var k, n;
+        for (k = 0; k < N; k++) {
+          var r = 0;
+          var i = 0;
+          for (n = 0; n < N; n++) {
+            var x = Math.cos(2 * Math.PI * freq * n / FS);
+            var angle = 2 * Math.PI * k * n / N;
+            r += x * Math.cos(angle);
+            i -= x * Math.sin(angle);
+          }
+          re[k] = r;
+          im[k] = i;
+        }
+        var half = N / 2;
+        var mag = [];
+        for (k = 0; k <= half; k++) {
+          var m = Math.hypot(re[k], im[k]) * 2 / N;
+          if (k === 0 || k === half) m = Math.hypot(re[k], im[k]) / N;
+          mag.push(m);
+        }
+        return mag;
+      }
+
+      function draw() {
+        var canvas = document.getElementById("leak-demo");
+        var box = surface(canvas);
+        var ctx = box.ctx;
+        var width = box.width;
+        var height = box.height;
+        var freq = Number(document.getElementById("tone-f").value);
+        var mag = dftMag(freq);
+        var padL = 40;
+        var padR = 16;
+        var top = 28;
+        var bottom = height - 36;
+        var fMax = 24;
+        var peak = 0;
+        var i;
+        for (i = 0; i < mag.length; i++) if (mag[i] > peak) peak = mag[i];
+        var yMax = Math.max(1.15, peak * 1.25);
+
+        function xOf(f) {
+          return padL + (f / fMax) * (width - padL - padR);
+        }
+        function yOf(m) {
+          return bottom - (m / yMax) * (bottom - top);
+        }
+
+        ctx.strokeStyle = INK;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(padL, bottom);
+        ctx.lineTo(width - padR, bottom);
+        ctx.stroke();
+
+        for (i = 0; i < mag.length; i++) {
+          var f = i * FS / N;
+          if (f > fMax) break;
+          var x = xOf(f);
+          var y = yOf(mag[i]);
+          ctx.fillStyle = WAVE;
+          ctx.fillRect(x - 3, y, 6, bottom - y);
+        }
+
+        ctx.save();
+        ctx.setLineDash([3, 3]);
+        ctx.strokeStyle = TEAL;
+        ctx.beginPath();
+        ctx.moveTo(xOf(freq), top);
+        ctx.lineTo(xOf(freq), bottom);
+        ctx.stroke();
+        ctx.restore();
+
+        ctx.fillStyle = MUTED;
+        ctx.font = "13px Microsoft YaHei, sans-serif";
+        ctx.textAlign = "left";
+        ctx.fillText("|X|（N=64，Δf=1 Hz）", padL, 18);
+        ctx.textAlign = "center";
+        ctx.font = "12px Consolas, Microsoft YaHei, sans-serif";
+        for (i = 0; i <= fMax; i += 4) {
+          ctx.fillStyle = MUTED;
+          ctx.fillText(String(i), xOf(i), height - 10);
+        }
+
+        document.getElementById("tone-f-out").textContent = freq.toFixed(1);
+        var nearest = Math.round(freq);
+        var offset = Math.abs(freq - nearest);
+        document.getElementById("leak-readout").textContent =
+          "频率 " + freq.toFixed(1) + " Hz。最近格子 " + nearest +
+          " Hz，偏离 " + offset.toFixed(1) +
+          " Hz。" + (offset < 0.05
+            ? "几乎对齐，主峰干净。"
+            : "未对齐，能量爬到邻居格子上。");
+      }
+
+      document.getElementById("tone-f").addEventListener("input", draw);
+      document.getElementById("leak-reset").addEventListener("click", function () {
+        document.getElementById("tone-f").value = "8";
+        draw();
+      });
+      document.getElementById("leak-align").addEventListener("click", function () {
+        var freq = Number(document.getElementById("tone-f").value);
+        document.getElementById("tone-f").value = String(Math.round(freq));
+        draw();
+      });
+      window.addEventListener("resize", draw);
+      draw();
+    })();
+  </script>
+</body>
+</html>

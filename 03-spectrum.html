@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 3 篇 · 时域和频域</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        傅里叶变换 · 音视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="00-sine.html">第 0 篇</a>
+        <a href="01-sampling.html">第 1 篇</a>
+        <a href="02-sum.html">第 2 篇</a>
+        <a href="03-spectrum.html" aria-current="page">第 3 篇</a>
+        <a href="04-series.html">第 4 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 3 篇 · 两种看法 · 约 40 分钟</p>
+    <h1>时域和频域</h1>
+    <p class="lede">同一段波可以按时间看，也可以按频率看。时域记下每个时刻有多高；频域记下每种快慢有多强。这一篇的柱高直接来自配方，怎样从波形里把配方算出来，放到第 5 篇。</p>
+    <div class="meta">
+      <span class="pill">先读：第 2 篇</span>
+      <span class="pill">会看到同一配方的两张图</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#axes">两种横轴</a></li>
+        <li><a href="#bars">一根柱子是什么</a></li>
+        <li><a href="#square">方波的频谱</a></li>
+        <li><a href="#phase">相位不在柱子上</a></li>
+        <li><a href="#try">在网页里对照</a></li>
+        <li><a href="#hear">听同一对柱</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改三根柱子</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="axes">两种横轴</h2>
+    <p>第 0 篇到第 2 篇的图，横轴都是时间，纵轴是这一刻的高度。这种看法叫<strong>时域</strong>。</p>
+    <p>第 2 篇的配方还可以换成另一根横轴：频率。每根柱子的位置是一种快慢，高度是这种快慢的振幅。这种看法叫<strong>频域</strong>，画出来的柱状图叫<strong>频谱</strong>。第 2 篇图 2-4 先把它叫做配方，从这一篇起按频谱来读。</p>
+    <figure>
+      <svg viewBox="0 0 760 250" role="img" aria-labelledby="axisTitle axisDesc">
+        <title id="axisTitle">时域按时间画高度，频域按频率画振幅</title>
+        <desc id="axisDesc">左图是一条随时间起伏的曲线。右图在 440 Hz 和 880 Hz 各有一根柱，660 Hz 的位置是空的。</desc>
+        <rect x="16" y="16" width="352" height="218" rx="12" fill="#fffdf8" stroke="#e3d9c8"/>
+        <rect x="392" y="16" width="352" height="218" rx="12" fill="#fffdf8" stroke="#e3d9c8"/>
+        <text x="36" y="46" fill="#0e6b66" font-size="18" font-family="Microsoft YaHei, sans-serif" font-weight="700">时域</text>
+        <text x="412" y="46" fill="#c24d28" font-size="18" font-family="Microsoft YaHei, sans-serif" font-weight="700">频域</text>
+        <line x1="48" y1="168" x2="330" y2="168" stroke="#5c564c" stroke-width="1.2"/>
+        <path d="M48 168 C 78 168, 78 108, 108 108 C 138 108, 138 168, 168 168 C 198 168, 198 228, 228 228 C 258 228, 258 168, 288 168 C 318 168, 318 108, 330 120" fill="none" stroke="#1c1915" stroke-width="2.4" stroke-linecap="round"/>
+        <text x="168" y="214" fill="#5c564c" font-size="14" font-family="Microsoft YaHei, sans-serif">时间</text>
+        <line x1="430" y1="190" x2="710" y2="190" stroke="#5c564c" stroke-width="1.2"/>
+        <rect x="498" y="96" width="28" height="94" fill="#c24d28"/>
+        <rect x="622" y="96" width="28" height="94" fill="#c24d28"/>
+        <text x="492" y="214" fill="#5c564c" font-size="14" font-family="Microsoft YaHei, sans-serif">440</text>
+        <text x="560" y="214" fill="#5c564c" font-size="14" font-family="Microsoft YaHei, sans-serif">660</text>
+        <text x="616" y="214" fill="#5c564c" font-size="14" font-family="Microsoft YaHei, sans-serif">880</text>
+        <text x="560" y="86" fill="#5c564c" font-size="13" font-family="Microsoft YaHei, sans-serif">空</text>
+      </svg>
+      <figcaption>图 3-1　左边回答「这一秒有多高」。右边回答「440 Hz 和 880 Hz 各有多强」。660 Hz 写在轴上，那里没有柱，表示配方里没有这个频率。</figcaption>
+    </figure>
+    <div class="table-scroll">
+      <table>
+        <caption>同一段波，两种读法</caption>
+        <thead>
+          <tr><th></th><th>时域</th><th>频域</th></tr>
+        </thead>
+        <tbody>
+          <tr><th>横轴</th><td>时间</td><td>频率</td></tr>
+          <tr><th>纵轴</th><td>这一刻的高度</td><td>这个频率的振幅</td></tr>
+          <tr><th>一条纯音</th><td>一条正弦</td><td>一根柱</td></tr>
+          <tr><th>440 加 880</th><td>两条扭在一起的曲线</td><td>440 和 880 两根柱</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="bars">一根柱子是什么</h2>
+    <p>频谱上的一根柱，就是配方里的一条纯音。柱的位置是频率，柱的高度就是第 0 篇里的振幅 A。这一篇先不把高度换成对数。</p>
+    <p>它不表示「在 440 秒发生了什么」。横轴已经换成频率，440 的意思是每秒来回 440 次。</p>
+    <p class="formula">y(t) = A₁ sin(2π f₁ t + φ₁) + A₂ sin(2π f₂ t + φ₂) + …</p>
+    <p>左边是时域：每个时刻把各条正弦的高度加起来。频谱这一篇只抄下每一对 (f, A)。相位 φ 先留在时域里，不画进柱子。</p>
+    <figure>
+      <img src="assets/figures/ch03_two.png" alt="10 毫秒内 440 Hz 与 880 Hz 相加的波形，以及 440 和 880 两根等高的柱，660 处没有柱">
+      <figcaption>图 3-2　上图是时域，下图是频域，两边来自同一份配方：440 Hz 振幅 1，880 Hz 振幅 1。下图在 660 Hz 留了一个刻度，那里没有柱。第 2 篇听过的「另一个音」要单独写进配方，才会在 660 长出一根柱。</figcaption>
+    </figure>
+    <p><strong>算例。</strong> 把频率放慢成 1 Hz 和 2 Hz，振幅仍是 1，相位都是 0。t = 0.25 秒时，慢的那条高度是 1，快的那条高度是 0，相加是 1。频谱上仍是两根高度为 1 的柱。时域里的这一个高度，并不会变成柱高。</p>
+
+    <h2 id="square">方波的频谱</h2>
+    <p>第 2 篇用奇数倍把方波拼出来。那些倍数和振幅，排到频率轴上，就是这段橙色曲线的频谱。</p>
+    <figure>
+      <img src="assets/figures/ch03_square.png" alt="前 5 项橙色曲线靠近青色方波，下面是 1、3、5、7、9 Hz 五根递减的柱">
+      <figcaption>图 3-3　上图青色是目标方波，橙色是前 5 项。下图五根柱只描述橙色曲线：1 Hz 约 1.27，3 Hz 约 0.42，然后是 0.25、0.18、0.14。2 Hz、4 Hz 这些偶数倍没有柱。</figcaption>
+    </figure>
+    <p>这里有两个不同的「高度」。方波平台在时域里是 1 和 −1。基频那根柱大约是 1.27，它是这条正弦自己的振幅，不是平台的高度。1.27 来自 4/π，第 2 篇已经见过。</p>
+
+    <h2 id="phase">相位不在柱子上</h2>
+    <p>振幅决定柱高。相位决定这条正弦从哪里起跳。只改相位时，配方里的 (f, A) 不变，频谱就不变；每个时刻的高度会变，时域曲线就变了。</p>
+    <figure>
+      <img src="assets/figures/ch03_phase.png" alt="相位 0 度与 90 度的两条时域曲线不同，下面的频谱都是 1 Hz 和 2 Hz 两根高度为 1 的柱">
+      <figcaption>图 3-4　仍是 1 Hz 加 2 Hz，振幅都是 1。上图相位 0°，虚线在 0.25 秒，相加为 1。中图把第二条相位改成 90°，同一条虚线上相加为 0，而且 0 秒时曲线从高度 1 出发。下图两根柱仍是 1.00 和 1.00。3 Hz、4 Hz 是空的。</figcaption>
+    </figure>
+    <p><strong>算例。</strong> 第二条相位改成 90° 以后，t = 0 秒：第一条高度 0，第二条高度 1，相加 1。t = 0.25 秒：第一条高度 1，第二条高度 −1，相加 0。两根柱的高度都还是 1。</p>
+    <div class="callout note">
+      <p>只留下柱高，还原不出原来的波形。相位要单独画，放到第 5 篇。这一篇先记住：频谱上的高度是振幅。</p>
+    </div>
+
+    <h2 id="try">在网页里对照</h2>
+    <p>上图是时域。两条相加时纵轴留到 ±2.5，避免相加后的波峰被裁掉；方波那一档纵轴收到 ±1.7，平台仍在 ±1 附近。下图是频域，柱高和时域共用同一份配方。先看「两条相加」，再把相位拖到 90°：上图变了，下图两根柱不动。方波那一档的柱高约 1.27，比纯音的柱更高。</p>
+    <div class="playground">
+      <canvas id="view-demo" class="demo stack" width="820" height="460" aria-label="时域波形和对应的频谱柱"></canvas>
+      <div class="actions">
+        <button type="button" id="preset-one" aria-pressed="false">一条纯音</button>
+        <button type="button" class="primary" id="preset-two" aria-pressed="true">两条相加</button>
+        <button type="button" id="preset-square" aria-pressed="false">方波前 5 项</button>
+        <button type="button" id="view-reset">恢复初始</button>
+      </div>
+      <div class="controls">
+        <label for="phase-deg">第二条相位</label>
+        <input id="phase-deg" type="range" min="0" max="180" step="15" value="0">
+        <output id="phase-out" for="phase-deg">0°</output>
+      </div>
+      <p class="readout" id="view-readout" aria-live="polite"></p>
+    </div>
+    <p>相位滑块只改变「两条相加」里的第二条。另外两档的相位都是 0°。</p>
+
+    <h2 id="hear">听同一对柱</h2>
+    <p>图 3-2 的振幅是 1，下面的声音把两根柱一起缩到 0.3，免得太响。缩完以后，440 Hz 和 880 Hz 的柱仍然一样高。</p>
+    <p>440 Hz + 880 Hz，相位都是 0°。</p>
+    <audio controls src="assets/audio/ch03_two.wav"></audio>
+    <p>还是这两根柱，第二条相位改成 90°。音高仍是 440 和 880。柱状图记录的是这两个音有多强，没有记录相位。</p>
+    <audio controls src="assets/audio/ch03_phase90.wav"></audio>
+    <p>方波的声音把基频放到 220 Hz，否则 1 Hz 听不见。五项分别是 220、660、1100、1540、1980 Hz，高低比例和图 3-3 相同。</p>
+    <audio controls src="assets/audio/ch03_square.wav"></audio>
+
+    <h2 id="run">运行脚本</h2>
+    <p>脚本按一组 (频率, 振幅) 同时画出时域曲线和频谱柱。核心就是把配方加起来：</p>
+    <pre><code>def synthesize(t, tones, phases=None):
+    y = np.zeros_like(np.asarray(t, dtype=float), dtype=float)
+    if phases is None:
+        phases = np.zeros(len(tones))
+    for (frequency, amplitude), phase in zip(tones, phases):
+        if amplitude == 0 or frequency &lt;= 0:
+            continue
+        y = y + amplitude * np.sin(2 * np.pi * frequency * t + phase)
+    return y
+
+tones = [(440, 1.0), (880, 1.0)]   # 频域里的两根柱
+y = synthesize(t, tones)            # 时域里的一条曲线</code></pre>
+    <p>完整脚本在 <a href="code/ch03_spectrum.py"><code>code/ch03_spectrum.py</code></a>。课文图不读文件顶部的三个数。</p>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <pre class="terminal"><code>python code/ch03_spectrum.py</code></pre>
+      <p>终端里应出现「自检通过」，以及「方波基频柱高约为 1.273」。课文图是 <code>ch03_two.png</code>、<code>ch03_phase.png</code>、<code>ch03_square.png</code>。<code>ch03_mine.png</code> 和 <code>ch03_mine.wav</code> 只跟随顶部的三组频率和振幅。</p>
+    </div>
+    <div class="callout note">
+      <p>若终端中文是乱码，先执行 <code>chcp 65001</code>。图和 wav 照样会保存。</p>
+    </div>
+
+    <h2 id="edit">改三根柱子</h2>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>打开 <code>code/ch03_spectrum.py</code>，把 <code>A2 = 0.35</code> 改成 <code>0</code>，运行。打开 <code>ch03_mine.png</code>：660 Hz 那根柱消失，上图的曲线也不再含这个音。刷新本页听 <code>ch03_mine.wav</code>。</li>
+        <li>把 <code>A2</code> 改回 <code>0.35</code>，把 <code>F2 = 660.0</code> 改成 <code>550.0</code>，再运行。柱子改长在 550 Hz，时域曲线跟着变。</li>
+        <li>做完把 <code>F2</code> 改回 <code>660.0</code>，再运行一次。默认的三根柱是 440 Hz 高 0.55、660 Hz 高 0.35、880 Hz 高 0.25。</li>
+      </ol>
+    </div>
+    <figure>
+      <img src="assets/figures/ch03_mine.png" alt="440、660、880 Hz 相加的短波形，以及三根高度为 0.55、0.35、0.25 的柱">
+      <figcaption>图 3-5　默认的「你的配方」。上图只画出最快那条大约 4 个周期，所以时间很短，440 Hz 在窗口里走了两圈。下图柱高就是脚本里写的振幅。三根振幅加起来超过 1 时，声音会按峰值缩小，图上的柱高不变。</figcaption>
+    </figure>
+    <p>你的声音：</p>
+    <audio controls src="assets/audio/ch03_mine.wav"></audio>
+    <p>振幅请用 0 到 1，频率请用 0 或正数。写成 0 就关掉那根柱。两根柱的频率请错开，否则会叠在同一个位置。频率不低于采样率的一半时，图上仍画这根柱，声音里会去掉它，终端会提示。</p>
+
+    <h2 id="check">自测</h2>
+    <details class="quiz">
+      <summary>1. 时域和频域的横轴分别是什么？440 Hz 加 880 Hz、振幅都是 1 时，660 Hz 的柱高是多少？</summary>
+      <p>时域横轴是时间，频域横轴是频率。这份配方没有 660 Hz，那里没有柱，振幅是 0。440 和 880 各有一根高度为 1 的柱。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. 1 Hz 加 2 Hz，第二条相位从 0° 改成 90°。0.25 秒的高度变成多少？两根柱变不变？</summary>
+      <p>高度从 1 变成 0：第一条是 1，第二条是 −1。两根柱仍是 1 和 1。相位改的是时域曲线，这一篇的柱高只记振幅。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. 方波前 5 项，基频那根柱大约多高？它和方波平台的 1 是同一个数吗？</summary>
+      <p>大约 1.27，也就是 4/π。平台高度 1 是时域里方波的目标高度。1.27 是基频这条正弦的振幅。3 倍那根柱大约是 0.42，约是 1.27 的三分之一。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>下一篇看周期信号：这些系数怎样用「和标准正弦有多齐」算出来，方波为什么只留下奇数倍，以及拐角外侧那一截过冲。</p>
+    <p><a href="04-series.html">第 4 篇 · 傅里叶级数</a></p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="02-sum.html">上一篇</a>
+      <a href="04-series.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var INK = "#1c1915";
+      var MUTED = "#5c564c";
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+      var preset = "two";
+
+      function surface(canvas) {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var width = canvas.clientWidth || 640;
+        var height = canvas.clientHeight || 460;
+        var pw = Math.round(width * dpr);
+        var ph = Math.round(height * dpr);
+        if (canvas.width !== pw || canvas.height !== ph) {
+          canvas.width = pw;
+          canvas.height = ph;
+        }
+        var ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(0, 0, width, height);
+        return { ctx: ctx, width: width, height: height };
+      }
+
+      function drawCurve(ctx, xOf, yOf, fn, color, width, tEnd) {
+        ctx.beginPath();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width;
+        var steps = 600;
+        var i;
+        for (i = 0; i <= steps; i++) {
+          var t = (i / steps) * tEnd;
+          var x = xOf(t);
+          var y = yOf(fn(t));
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      }
+
+      function sine(t, frequency, amplitude, phaseDeg) {
+        return amplitude * Math.sin(2 * Math.PI * frequency * t + phaseDeg * Math.PI / 180);
+      }
+
+      function idealSquare(t) {
+        return (t % 1) < 0.5 ? 1 : -1;
+      }
+
+      function recipe() {
+        var phase = Number(document.getElementById("phase-deg").value);
+        if (preset === "one") {
+          return [{ f: 1, a: 1, phase: 0 }];
+        }
+        if (preset === "two") {
+          return [
+            { f: 1, a: 1, phase: 0 },
+            { f: 2, a: 1, phase: phase }
+          ];
+        }
+        var harmonics = [1, 3, 5, 7, 9];
+        return harmonics.map(function (h) {
+          return { f: h, a: (4 / Math.PI) / h, phase: 0 };
+        });
+      }
+
+      function sumAt(parts, t) {
+        var total = 0;
+        var i;
+        for (i = 0; i < parts.length; i++) {
+          var part = parts[i];
+          total += sine(t, part.f, part.a, part.phase);
+        }
+        return total;
+      }
+
+      function draw() {
+        var canvas = document.getElementById("view-demo");
+        var box = surface(canvas);
+        var ctx = box.ctx;
+        var width = box.width;
+        var height = box.height;
+        var parts = recipe();
+        var phase = Number(document.getElementById("phase-deg").value);
+        var timeTop = 26;
+        var timeBottom = Math.round(height * 0.50);
+        var freqTop = timeBottom + 48;
+        var freqBottom = height - 28;
+        var padL = 36;
+        var padR = 16;
+        var yMax = preset === "square" ? 1.7 : (preset === "one" ? 1.5 : 2.5);
+        var aMax = 1.75;
+        var fMax = preset === "square" ? 11 : 4.5;
+
+        function xTime(t) {
+          return padL + t * (width - padL - padR);
+        }
+        function yTime(y) {
+          return timeTop + (1 - (y + yMax) / (2 * yMax)) * (timeBottom - timeTop);
+        }
+        function xFreq(f) {
+          return padL + (f / fMax) * (width - padL - padR);
+        }
+        function yFreq(a) {
+          return freqBottom - (a / aMax) * (freqBottom - freqTop);
+        }
+
+        ctx.strokeStyle = INK;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(padL, yTime(0));
+        ctx.lineTo(width - padR, yTime(0));
+        ctx.moveTo(padL, freqBottom);
+        ctx.lineTo(width - padR, freqBottom);
+        ctx.stroke();
+
+        ctx.save();
+        ctx.setLineDash([3, 3]);
+        ctx.strokeStyle = "#8d8376";
+        ctx.beginPath();
+        ctx.moveTo(xTime(0.25), timeTop);
+        ctx.lineTo(xTime(0.25), timeBottom);
+        ctx.stroke();
+        ctx.restore();
+
+        if (preset === "one") {
+          drawCurve(ctx, xTime, yTime, function (t) {
+            return sine(t, 1, 1, 0);
+          }, TEAL, 2.2, 1);
+        } else if (preset === "two") {
+          drawCurve(ctx, xTime, yTime, function (t) {
+            return sine(t, 1, 1, 0);
+          }, TEAL, 1.6, 1);
+          drawCurve(ctx, xTime, yTime, function (t) {
+            return sine(t, 2, 1, phase);
+          }, WAVE, 1.6, 1);
+          drawCurve(ctx, xTime, yTime, function (t) {
+            return sumAt(parts, t);
+          }, INK, 2.3, 1);
+        } else {
+          drawCurve(ctx, xTime, yTime, idealSquare, TEAL, 1.5, 0.999);
+          drawCurve(ctx, xTime, yTime, function (t) {
+            return sumAt(parts, t);
+          }, WAVE, 2.0, 1);
+        }
+
+        var barHz = preset === "square" ? 0.42 : 0.16;
+        var i;
+        for (i = 0; i < parts.length; i++) {
+          var left = xFreq(parts[i].f - barHz / 2);
+          var right = xFreq(parts[i].f + barHz / 2);
+          var top = yFreq(parts[i].a);
+          ctx.fillStyle = WAVE;
+          ctx.fillRect(left, top, Math.max(2, right - left), freqBottom - top);
+        }
+
+        ctx.fillStyle = MUTED;
+        ctx.font = "13px Microsoft YaHei, sans-serif";
+        ctx.fillText("时域", padL, 16);
+        ctx.fillText("频域", padL, freqTop - 8);
+        ctx.fillText("0", padL, timeBottom + 16);
+        ctx.fillText("1 秒", width - padR - 36, timeBottom + 16);
+
+        var ticks = preset === "square" ? [0, 1, 3, 5, 7, 9] : [0, 1, 2, 3, 4];
+        ctx.font = "12px Consolas, Microsoft YaHei, sans-serif";
+        ctx.textAlign = "center";
+        for (i = 0; i < ticks.length; i++) {
+          var tick = ticks[i];
+          ctx.fillStyle = MUTED;
+          ctx.fillRect(xFreq(tick), freqBottom, 1, 4);
+          ctx.fillText(String(tick), xFreq(tick), height - 8);
+        }
+        ctx.textAlign = "left";
+
+        document.getElementById("phase-out").textContent = preset === "two" ? (phase + "°") : "此档不用";
+        var y0 = sumAt(parts, 0);
+        var y25 = sumAt(parts, 0.25);
+        var bars = parts.map(function (part) {
+          return part.f + " Hz 高 " + part.a.toFixed(2);
+        }).join("，");
+        var phaseNote = preset === "two"
+          ? "第二条相位 " + phase + "°。柱高不随相位改变。"
+          : "这张配方的相位都是 0°。";
+        document.getElementById("view-readout").textContent =
+          "上图是时域，下图是频域。0 秒高度 " + y0.toFixed(2) +
+          "，0.25 秒高度 " + y25.toFixed(2) +
+          "。频域有 " + parts.length + " 根柱：" + bars + "。" + phaseNote;
+      }
+
+      function setPreset(name) {
+        preset = name;
+        ["one", "two", "square"].forEach(function (key) {
+          var button = document.getElementById("preset-" + key);
+          var on = key === name;
+          button.classList.toggle("primary", on);
+          button.setAttribute("aria-pressed", on ? "true" : "false");
+        });
+        document.getElementById("phase-deg").disabled = name !== "two";
+        draw();
+      }
+
+      document.getElementById("preset-one").addEventListener("click", function () { setPreset("one"); });
+      document.getElementById("preset-two").addEventListener("click", function () { setPreset("two"); });
+      document.getElementById("preset-square").addEventListener("click", function () { setPreset("square"); });
+      document.getElementById("phase-deg").addEventListener("input", draw);
+      document.getElementById("view-reset").addEventListener("click", function () {
+        document.getElementById("phase-deg").value = "0";
+        setPreset("two");
+      });
+      window.addEventListener("resize", draw);
+      setPreset("two");
+    })();
+  </script>
+</body>
+</html>
