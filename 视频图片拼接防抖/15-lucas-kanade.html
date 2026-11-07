@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 15 篇 · 稀疏光流：Lucas-Kanade</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        拼接与防抖 · 图像视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="14-optical-flow-basics.html">第 14 篇</a>
+        <a href="15-lucas-kanade.html" aria-current="page">第 15 篇</a>
+        <a href="16-pyramid-lk.html">第 16 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 15 篇 · 光流重点 · 约 60 分钟</p>
+    <h1>稀疏光流：Lucas-Kanade</h1>
+    <p class="lede">第 14 篇钉牢了「亮度守恒」和「一个像素定不了两个未知数」。这一篇给出最常用的补丁：在特征点附近开一个小窗口，假设窗口里大家共用同一个平移 (u, v)，把许多条弱约束叠成超定方程，用最小二乘（法方程）一次解出。读完应能看懂 OpenCV <code>calcOpticalFlowPyrLK</code> 在「单层」时在干什么，并能用合成平移图对照数值、画出稀疏箭头。</p>
+    <div class="meta">
+      <span class="pill">先读：第 14 篇（亮度守恒 / 孔径）</span>
+      <span class="pill">下一篇：金字塔 LK，对付大位移</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#sparse">稀疏是什么意思</a></li>
+        <li><a href="#window">窗口内：同一平移假设</a></li>
+        <li><a href="#stack">亮度守恒叠成超定方程</a></li>
+        <li><a href="#ls">法方程与最小二乘白话</a></li>
+        <li><a href="#when">何时成立、何时碎掉</a></li>
+        <li><a href="#opencv">单层 calcOpticalFlowPyrLK</a></li>
+        <li><a href="#try">交互：拧窗口大小</a></li>
+        <li><a href="#synth">合成平移：手算对照</a></li>
+        <li><a href="#arrows">画箭头：稀疏跟踪一眼看懂</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改这里</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="sparse">稀疏是什么意思</h2>
+    <p>光流要回答的是：图像上某个位置，在下一帧「挪到了哪里」。若<strong>每个像素</strong>都估一个 (u, v)，叫<strong>稠密</strong>光流（第 17 篇）。若只在事先挑好的点——通常是角点、特征点——上估，叫<strong>稀疏</strong>光流。</p>
+    <p>防抖、跟踪、估帧间变换，往往不需要整幅稠密场，只要几十到几百个靠谱点就够。Lucas-Kanade（简称 LK）正是稀疏路线里的经典积木。</p>
+    <div class="callout note">
+      <p>名字里的 Lucas 与 Kanade 是两位作者。工程口语里「跑一下 LK」常常直接指 OpenCV 的 <code>calcOpticalFlowPyrLK</code>；本篇先讲<strong>单层、无金字塔</strong>的核心，金字塔留给第 16 篇。</p>
+    </div>
+
+    <h2 id="window">窗口内：同一平移假设</h2>
+    <p>第 14 篇的亮度守恒，在一个像素上只给出：</p>
+    <p class="formula">I<sub>x</sub> · u + I<sub>y</sub> · v = −I<sub>t</sub></p>
+    <p>一个方程、两个未知数——解不唯一，这就是孔径问题的代数面目。</p>
+    <p>Lucas-Kanade 的关键补丁只有一句：</p>
+    <p><strong>在特征点周围开一个小窗口（比如 15×15），假设窗口里所有像素共享同一个平移 (u, v)。</strong></p>
+    <p>生活类比：你盯着一张贴纸上的一小块。贴纸整体在桌上滑，短时间内这块里的墨点几乎「齐步走」——同一方向、同一距离。于是每个像素仍贡献一条「Ix u + Iy v = −It」，但未知数还是只有那一对 (u, v)。方程多了，未知数没变。</p>
+    <figure>
+      <img src="assets/figures/ch15_window_assumption.png" alt="左：窗口内箭头相同；右：窗口跨两种运动时假设碎掉">
+      <figcaption>图 15-1　左：小窗口里箭头同向同长——LK 的核心假设。右：窗口若同时盖住「向右走」和「向左走」两块，一个 (u, v) 无法伺候两边，假设碎掉。</figcaption>
+    </figure>
+    <p>窗口太小：方程少、噪声大。窗口太大：更容易混进不同运动（物体边界、深度跳变）。后面交互里可以拧窗口边长，看结构张量与估计怎样变。</p>
+
+    <h2 id="stack">亮度守恒叠成超定方程</h2>
+    <p>把窗口里第 k 个像素写成一行：</p>
+    <p class="formula">I<sub>x</sub><sup>(k)</sup> u + I<sub>y</sub><sup>(k)</sup> v = −I<sub>t</sub><sup>(k)</sup></p>
+    <p>n 个像素 → n 行。矩阵写法：</p>
+    <p class="formula">A p = b</p>
+    <p>其中 p = (u, v)<sup>T</sup> 是 2×1；A 是 n×2，每一行是 (I<sub>x</sub>, I<sub>y</sub>)；b 是 n×1，每一行是 −I<sub>t</sub>。</p>
+    <figure>
+      <img src="assets/figures/ch15_equation_stack.png" alt="超定方程组 A p = b 的示意">
+      <figcaption>图 15-2　n ≫ 2 叫超定：方程比未知数多。噪声下通常没有「刚好满足所有行」的精确解。</figcaption>
+    </figure>
+    <p>符号从哪来（拆碎版）：</p>
+    <ul>
+      <li><strong>I<sub>x</sub>, I<sub>y</sub></strong>：第一帧灰度在水平/竖直方向的变化率（空间梯度）。亮暗交界处大，平坦处接近 0。</li>
+      <li><strong>I<sub>t</sub></strong>：两帧在同一像素位置的灰度差。图案挪走了，固定坐标处的亮度会变，I<sub>t</sub> 就非零。</li>
+      <li>一阶泰勒说：图案挪 (u, v) 引起的亮度变化，近似等于「空间梯度 · 位移」。移到等式另一边，就得到上面那一行。</li>
+    </ul>
+    <div class="callout note">
+      <p>泰勒展开只在位移很小时准。位移到几个像素时，工程上会<strong>迭代</strong>：估一小步 → 按当前 (u,v) 到第二帧取样再比 → 再估修正量并累加。OpenCV 的 PyrLK 即便 <code>maxLevel=0</code> 也会做这类迭代。脚本里的 <code>lucas_kanade_at</code> 同样迭代了若干次。</p>
+    </div>
+
+    <h2 id="ls">法方程与最小二乘白话</h2>
+    <p>超定系统一般求：让残差平方和最小的 p。</p>
+    <p class="formula">最小化 ‖A p − b‖²</p>
+    <p>白话：每条方程是 (u,v) 平面上的一条直线（约束）。噪声下这些直线不会交于一点。最小二乘找一个点，让它到所有约束的「违背程度」的平方和最小——像在一束差不齐的线中间找最公道的交点。</p>
+    <p>对 p 求导并令其为零，得到<strong>法方程</strong>：</p>
+    <p class="formula">A<sup>T</sup> A · p = A<sup>T</sup> b</p>
+    <p>左边的 2×2 矩阵常写作 G，叫<strong>结构张量</strong>（或图像的二阶矩矩阵）：</p>
+    <p class="formula">G = [ Σ I<sub>x</sub>²　　Σ I<sub>x</sub> I<sub>y</sub> ]</p>
+    <p class="formula" style="margin-top:0.2rem">　　　[ Σ I<sub>x</sub> I<sub>y</sub>　Σ I<sub>y</sub>² ]</p>
+    <p>右边是：</p>
+    <p class="formula">A<sup>T</sup> b = (−Σ I<sub>x</sub> I<sub>t</sub>， −Σ I<sub>y</sub> I<sub>t</sub>)<sup>T</sup></p>
+    <p>于是只需求解一个 2×2 线性系统：G p = A<sup>T</sup> b。不必真的组出巨大的 A。</p>
+    <figure>
+      <img src="assets/figures/ch15_normal_eq.png" alt="左：最小二乘几何直觉；右：法方程与结构张量">
+      <figcaption>图 15-3　左：约束线不完全一致时，橙点是最小二乘解。右：法方程把问题收成 2×2。</figcaption>
+    </figure>
+    <p>G 什么时候可逆？两个特征值都明显大于 0 —— 窗口里<strong>水平与竖直方向都有灰度变化</strong>。角点、碎纹理满足；一条直边（只有法向梯度）、大片平坦则 G 接近奇异，(u,v) 不定或乱飘。这和第 14 篇孔径问题、第 5 篇「角点好跟踪」是同一件事的不同说法。</p>
+
+    <h2 id="when">何时成立、何时碎掉</h2>
+    <p>LK 不是万能胶。假设与现实对不上时，数值仍可能给出一个 (u,v)，但那是「错得一本正经」。</p>
+    <div class="table-scroll">
+      <table>
+        <caption>表 15-1　LK 假设对照</caption>
+        <thead>
+          <tr><th>假设</th><th>大致成立时</th><th>容易碎掉时</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>亮度守恒</td><td>光照稳定、曝光一致</td><td>闪烁、自动曝光猛跳、阴影扫过</td></tr>
+          <tr><td>窗口同一平移</td><td>小窗口、刚体/远景小平移</td><td>窗口跨物体边界、旋转/缩放明显、大视差</td></tr>
+          <tr><td>一阶泰勒够用</td><td>位移约 ≤ 1–2 像素（或靠迭代）</td><td>大位移且不迭代 / 无金字塔</td></tr>
+          <tr><td>G 可逆</td><td>角点、双向纹理</td><td>平坦、一条边（孔径）</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <figure>
+      <img src="assets/figures/ch15_when_breaks.png" alt="角点可解、只有边、平坦三种对照">
+      <figcaption>图 15-4　同一真值平移。角点：估得准。只有竖直边：结构张量病态（孔径）。平坦：梯度≈0，直接判失败。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>实战里还会碎在：遮挡（点在下一帧被挡住）、运动模糊、重复纹理（跟错邻居）。第 16 篇的前后向检验、第 18 篇的失败模式会再展开。</p>
+    </div>
+
+    <h2 id="opencv">单层 calcOpticalFlowPyrLK 在做什么</h2>
+    <p>OpenCV 调用长这样：</p>
+    <pre><code>nextPts, status, err = cv2.calcOpticalFlowPyrLK(
+    prevImg, nextImg, prevPts, None,
+    winSize=(21, 21),
+    maxLevel=0,          # 0 = 不用图像金字塔，本篇焦点
+    criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
+)</code></pre>
+    <figure>
+      <img src="assets/figures/ch15_opencv_flow.png" alt="PyrLK 单层流程示意">
+      <figcaption>图 15-5　输入灰图 + 点 → 每点取窗、做法方程（可迭代）→ 输出下一帧坐标与 status。</figcaption>
+    </figure>
+    <ul>
+      <li><strong>prevPts → nextPts</strong>：稀疏点从上一帧跟到下一帧。位移 (u,v) = next − prev。</li>
+      <li><strong>winSize</strong>：窗口边长（奇数）。越大越平滑，越容易混运动；越小越敏但对噪声更脆。</li>
+      <li><strong>maxLevel=0</strong>：只在原分辨率上做。大位移时单层容易跟丢——第 16 篇用金字塔「先粗后细」。</li>
+      <li><strong>criteria</strong>：迭代何时停（次数或步长够小）。</li>
+      <li><strong>status</strong>：该点是否跟成功；失败的点不要拿去估变换。</li>
+    </ul>
+    <p>和手写 LK 的对应关系：手写组 G 与 A<sup>T</sup>b 并迭代；OpenCV 在 C++ 里做同一件事，还带亚像素插值与若干数值稳定技巧。合成小位移时，二者应落在同一量级——下一节用图对照。</p>
+
+    <h2 id="try">交互：拧窗口大小</h2>
+    <p>下面用浏览器里的玩具数据模拟「角点小块 + 已知平移」。拖动窗口半径，看：方程条数、结构张量对角元、以及估出的 (u,v) 怎样变。右侧可切换「只有竖直边」看孔径：一个方向的 Σ 变很小，估计发飘。</p>
+    <div class="playground">
+      <canvas id="lk-demo" class="demo tall" width="820" height="400" aria-label="Lucas-Kanade 窗口大小交互"></canvas>
+      <div class="controls">
+        <label for="win-r">窗口半宽（边长=2r+1）</label>
+        <input id="win-r" type="range" min="2" max="18" step="1" value="7">
+        <output id="win-r-out" for="win-r">7 → 15×15</output>
+        <label for="true-u">真值 u（水平）</label>
+        <input id="true-u" type="range" min="-4" max="4" step="0.5" value="2">
+        <output id="true-u-out" for="true-u">2.0</output>
+        <label for="true-v">真值 v（竖直）</label>
+        <input id="true-v" type="range" min="-4" max="4" step="0.5" value="1">
+        <output id="true-v-out" for="true-v">1.0</output>
+      </div>
+      <div class="actions">
+        <button type="button" class="primary" id="lk-corner">角点纹理</button>
+        <button type="button" id="lk-edge">只有竖直边</button>
+        <button type="button" id="lk-flat">平坦</button>
+      </div>
+      <p class="readout" id="lk-readout" aria-live="polite"></p>
+    </div>
+
+    <h2 id="synth">合成平移：手算对照</h2>
+    <p>脚本造一块「左上亮、其余暗」的角点，整图平移真值 (2, 1)，再分别：</p>
+    <ol>
+      <li>用手写 <code>lucas_kanade_at</code>（中心差分梯度 + 法方程 + 迭代）求解；</li>
+      <li>用 <code>calcOpticalFlowPyrLK(..., maxLevel=0)</code> 求解；</li>
+      <li>与真值并列。</li>
+    </ol>
+    <figure>
+      <img src="assets/figures/ch15_synth_compare.png" alt="合成角点两帧与三种数值对照">
+      <figcaption>图 15-6　左/中：平移前后。右：真值、手写、OpenCV 单层应非常接近（允许亚像素误差）。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch15_hand_steps.png" alt="手写 LK 计算步骤与本例 G 矩阵数值">
+      <figcaption>图 15-7　与代码路径一致的手算提纲。G 的对角元都很大 → 两方向有纹理 → 可解。</figcaption>
+    </figure>
+    <p>若你改「改这里」里的 <code>MY_TRUE_SHIFT</code> 或 <code>MY_WIN_SIZE</code>，会重画 <code>ch15_my_synth.png</code>。位移过大且仍单层时，误差会爬升——这正是第 16 篇要解决的问题。</p>
+
+    <h2 id="arrows">画箭头：稀疏跟踪一眼看懂</h2>
+    <p>在合成「小街景」上：<code>goodFeaturesToTrack</code> 选角点 → 单层 PyrLK 跟踪 → 把位移放大若干倍画箭头（否则箭头太短看不清）。</p>
+    <figure>
+      <img src="assets/figures/ch15_arrows.png" alt="稀疏光流箭头与下一帧对照">
+      <figcaption>图 15-8　左：上一帧 + 放大后的光流箭头。右：下一帧。整图同一平移时，箭头应大体同向同长。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/images/ch15_arrows_opencv.png" alt="OpenCV 画出的并排标注图">
+      <figcaption>图 15-9　脚本用 OpenCV 直接导出的并排图（BGR 写盘），方便你确认工具链。</figcaption>
+    </figure>
+
+    <h2 id="run">运行脚本</h2>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <pre class="terminal"><code>source .venv/bin/activate
+MPLCONFIGDIR=/tmp/mpl-cache python code/ch15_lucas_kanade.py</code></pre>
+      <p>终端应打印「自检通过」，并写出：</p>
+      <ul>
+        <li><code>assets/figures/ch15_window_assumption.png</code>、<code>ch15_equation_stack.png</code>、<code>ch15_normal_eq.png</code></li>
+        <li><code>ch15_when_breaks.png</code>、<code>ch15_opencv_flow.png</code>、<code>ch15_synth_compare.png</code>、<code>ch15_hand_steps.png</code>、<code>ch15_arrows.png</code></li>
+        <li><code>assets/images/ch15_arrows_opencv.png</code></li>
+        <li>你的 <code>ch15_my_synth.png</code>、<code>ch15_my_arrows.png</code>（及对应 opencv 图）</li>
+      </ul>
+    </div>
+
+    <h2 id="edit">改这里</h2>
+    <p>打开 <a href="code/ch15_lucas_kanade.py"><code>code/ch15_lucas_kanade.py</code></a> 顶部：</p>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>把 <code>MY_TRUE_SHIFT = (3.0, -1.5)</code> 改成 <code>(1.0, 0.5)</code>，运行后看 <code>ch15_my_synth.png</code>：手写与 OpenCV 应更贴真值。</li>
+        <li>把同一位移改成 <code>(8.0, 4.0)</code>（仍单层）。误差通常变大——感受「大位移需要金字塔」。</li>
+        <li>把 <code>MY_WIN_SIZE = 15</code> 改成 <code>7</code> 与 <code>31</code>，对比 <code>ch15_my_arrows.png</code>：窗口过小箭头更抖，过大在边界附近更易糊成「平均运动」。</li>
+        <li>把 <code>MY_ARROW_SCALE</code> 改成 <code>8</code>，箭头更夸张，仅影响可视化。</li>
+      </ol>
+    </div>
+
+    <h2 id="check">自测</h2>
+    <p>先自己答，再展开。</p>
+    <details class="quiz">
+      <summary>1. Lucas-Kanade 相对「单像素亮度守恒」多加了哪条假设？</summary>
+      <p>在特征点周围的小窗口内，所有像素共享同一个平移 (u, v)。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. 为什么说窗口里的方程是「超定」的？</summary>
+      <p>每个像素一条方程，未知数只有 u、v 两个；像素数 n 通常远大于 2，方程比未知数多。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. 法方程 AᵀA p = Aᵀb 在干什么？和「最小二乘」什么关系？</summary>
+      <p>它是最小化 ‖Ap−b‖² 后对 p 求导置零得到的必要条件。左边 2×2 的 AᵀA 就是结构张量 G，把大系统收成一次 2×2 求解。</p>
+    </details>
+    <details class="quiz">
+      <summary>4. 为什么角点适合 LK，而「只有一条边」不适合？</summary>
+      <p>角点两方向梯度都强，G 满秩、条件好。(u,v) 可唯一钉住。一条边只有法向信息，切向自由——孔径问题，G 接近奇异。</p>
+    </details>
+    <details class="quiz">
+      <summary>5. <code>calcOpticalFlowPyrLK</code> 里 <code>maxLevel=0</code> 表示什么？大位移时缺什么？</summary>
+      <p>表示不建图像金字塔，只在原分辨率上做（可迭代）。大位移时一阶近似与搜索范围都吃力，需要第 16 篇的金字塔由粗到细。</p>
+    </details>
+    <details class="quiz">
+      <summary>6. 窗口是不是越大越好？</summary>
+      <p>不是。更大更稳、抗噪，但更容易盖住不同运动，违背「同一平移」；也更钝。要在噪声与运动一致性之间折中。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>单层 LK 怕大位移。下一篇引入<strong>图像金字塔</strong>：先在模糊小图上迈大步，再逐层精炼；并串成视频里的点跟踪与前后向检验。</p>
+    <p><a href="16-pyramid-lk.html">第 16 篇 · 金字塔 LK 与特征点跟踪</a>（待写）</p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="14-optical-flow-basics.html">上一篇</a>
+      <a href="index.html">目录</a>
+      <a href="16-pyramid-lk.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+      var MUTED = "#5c564c";
+      var INK = "#1c1915";
+      var mode = "corner"; // corner | edge | flat
+      var canvas = document.getElementById("lk-demo");
+      var winR = document.getElementById("win-r");
+      var winOut = document.getElementById("win-r-out");
+      var trueU = document.getElementById("true-u");
+      var trueV = document.getElementById("true-v");
+      var trueUOut = document.getElementById("true-u-out");
+      var trueVOut = document.getElementById("true-v-out");
+      var readout = document.getElementById("lk-readout");
+
+      var N = 64;
+      var I0 = new Float64Array(N * N);
+      var I1 = new Float64Array(N * N);
+
+      function idx(x, y) { return y * N + x; }
+
+      function buildPattern() {
+        var x, y, v;
+        for (y = 0; y < N; y++) {
+          for (x = 0; x < N; x++) {
+            if (mode === "flat") {
+              v = 128;
+            } else if (mode === "edge") {
+              v = x < N / 2 ? 220 : 40;
+            } else {
+              v = (x < N / 2 && y < N / 2) ? 220 : 40;
+            }
+            I0[idx(x, y)] = v;
+          }
+        }
+        // 轻微平滑，避免纯阶跃
+        blur3(I0);
+      }
+
+      function blur3(buf) {
+        var tmp = new Float64Array(buf.length);
+        var x, y, s, c, dx, dy, xx, yy;
+        for (y = 0; y < N; y++) {
+          for (x = 0; x < N; x++) {
+            s = 0; c = 0;
+            for (dy = -1; dy <= 1; dy++) {
+              for (dx = -1; dx <= 1; dx++) {
+                xx = x + dx; yy = y + dy;
+                if (xx < 0 || yy < 0 || xx >= N || yy >= N) continue;
+                s += buf[idx(xx, yy)];
+                c++;
+              }
+            }
+            tmp[idx(x, y)] = s / c;
+          }
+        }
+        buf.set(tmp);
+      }
+
+      function sampleBilinear(buf, x, y) {
+        if (x < 0 || y < 0 || x > N - 1 || y > N - 1) return null;
+        var x0 = Math.floor(x), y0 = Math.floor(y);
+        var x1 = Math.min(x0 + 1, N - 1), y1 = Math.min(y0 + 1, N - 1);
+        var fx = x - x0, fy = y - y0;
+        var v00 = buf[idx(x0, y0)], v10 = buf[idx(x1, y0)];
+        var v01 = buf[idx(x0, y1)], v11 = buf[idx(x1, y1)];
+        return (1 - fx) * (1 - fy) * v00 + fx * (1 - fy) * v10
+             + (1 - fx) * fy * v01 + fx * fy * v11;
+      }
+
+      function shiftToI1(u, v) {
+        var x, y, s;
+        for (y = 0; y < N; y++) {
+          for (x = 0; x < N; x++) {
+            // I1(x,y) = I0(x-u, y-v)：图案向 (u,v) 走
+            s = sampleBilinear(I0, x - u, y - v);
+            I1[idx(x, y)] = s === null ? I0[idx(x, y)] : s;
+          }
+        }
+      }
+
+      function gradAt(buf, x, y) {
+        var xm = Math.max(0, x - 1), xp = Math.min(N - 1, x + 1);
+        var ym = Math.max(0, y - 1), yp = Math.min(N - 1, y + 1);
+        var ix = 0.5 * (buf[idx(xp, y)] - buf[idx(xm, y)]);
+        var iy = 0.5 * (buf[idx(x, yp)] - buf[idx(x, ym)]);
+        return { ix: ix, iy: iy };
+      }
+
+      function solveLK(uTrue, vTrue, half) {
+        shiftToI1(uTrue, vTrue);
+        var cx = (N / 2) | 0, cy = (N / 2) | 0;
+        var G11 = 0, G12 = 0, G22 = 0;
+        var x, y, g, n = 0;
+        var grads = [];
+        for (y = cy - half; y <= cy + half; y++) {
+          for (x = cx - half; x <= cx + half; x++) {
+            if (x < 1 || y < 1 || x >= N - 1 || y >= N - 1) continue;
+            g = gradAt(I0, x, y);
+            grads.push({ x: x, y: y, ix: g.ix, iy: g.iy, i0: I0[idx(x, y)] });
+            G11 += g.ix * g.ix;
+            G12 += g.ix * g.iy;
+            G22 += g.iy * g.iy;
+            n++;
+          }
+        }
+        var det = G11 * G22 - G12 * G12;
+        var eMin = 0.5 * ((G11 + G22) - Math.sqrt(Math.max(0, (G11 - G22) * (G11 - G22) + 4 * G12 * G12)));
+        var eMax = 0.5 * ((G11 + G22) + Math.sqrt(Math.max(0, (G11 - G22) * (G11 - G22) + 4 * G12 * G12)));
+        var singular = eMin < 5 || (eMax > 1e-9 && eMin / eMax < 0.02) || n < 4;
+        if (singular) {
+          return { ok: false, u: 0, v: 0, G11: G11, G12: G12, G22: G22, n: n, eMin: eMin, eMax: eMax };
+        }
+        var u = 0, v = 0, iter, b1, b2, du, dv, i, p, i1;
+        for (iter = 0; iter < 8; iter++) {
+          b1 = 0; b2 = 0;
+          for (i = 0; i < grads.length; i++) {
+            p = grads[i];
+            i1 = sampleBilinear(I1, p.x + u, p.y + v);
+            if (i1 === null) continue;
+            var it = i1 - p.i0;
+            b1 += -p.ix * it;
+            b2 += -p.iy * it;
+          }
+          du = (G22 * b1 - G12 * b2) / det;
+          dv = (-G12 * b1 + G11 * b2) / det;
+          u += du; v += dv;
+          if (Math.abs(du) < 1e-4 && Math.abs(dv) < 1e-4) break;
+        }
+        return { ok: true, u: u, v: v, G11: G11, G12: G12, G22: G22, n: n, eMin: eMin, eMax: eMax };
+      }
+
+      function surface() {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var width = canvas.clientWidth || 640;
+        var height = canvas.clientHeight || 400;
+        var pw = Math.round(width * dpr);
+        var ph = Math.round(height * dpr);
+        if (canvas.width !== pw || canvas.height !== ph) {
+          canvas.width = pw;
+          canvas.height = ph;
+        }
+        var ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(0, 0, width, height);
+        return { ctx: ctx, width: width, height: height };
+      }
+
+      function drawGray(ctx, buf, x0, y0, scale) {
+        var x, y, v, c;
+        for (y = 0; y < N; y++) {
+          for (x = 0; x < N; x++) {
+            v = buf[idx(x, y)] | 0;
+            c = "rgb(" + v + "," + v + "," + v + ")";
+            ctx.fillStyle = c;
+            ctx.fillRect(x0 + x * scale, y0 + y * scale, scale, scale);
+          }
+        }
+      }
+
+      function redraw() {
+        var half = parseInt(winR.value, 10);
+        var uT = parseFloat(trueU.value);
+        var vT = parseFloat(trueV.value);
+        winOut.textContent = half + " → " + (2 * half + 1) + "×" + (2 * half + 1);
+        trueUOut.textContent = uT.toFixed(1);
+        trueVOut.textContent = vT.toFixed(1);
+
+        buildPattern();
+        var res = solveLK(uT, vT, half);
+        var S = surface();
+        var ctx = S.ctx;
+        var scale = Math.min(3, Math.floor((S.width * 0.42) / N));
+        if (scale < 2) scale = 2;
+        var left = 24;
+        var top = 36;
+        drawGray(ctx, I0, left, top, scale);
+        ctx.strokeStyle = TEAL;
+        ctx.lineWidth = 2;
+        var cx = N / 2, cy = N / 2;
+        ctx.strokeRect(
+          left + (cx - half) * scale,
+          top + (cy - half) * scale,
+          (2 * half + 1) * scale,
+          (2 * half + 1) * scale
+        );
+        ctx.fillStyle = WAVE;
+        ctx.beginPath();
+        ctx.arc(left + cx * scale, top + cy * scale, 3.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = INK;
+        ctx.font = "14px sans-serif";
+        ctx.fillText("第 t 帧 + 窗口", left, 22);
+
+        var right = left + N * scale + 36;
+        drawGray(ctx, I1, right, top, scale);
+        ctx.fillStyle = TEAL;
+        ctx.beginPath();
+        ctx.arc(right + (cx + uT) * scale, top + (cy + vT) * scale, 3.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = INK;
+        ctx.fillText("第 t+1 帧（真值平移）", right, 22);
+
+        // 箭头示意
+        var ax0 = left + cx * scale;
+        var ay0 = top + cy * scale;
+        var mag = res.ok ? 1 : 0;
+        var ax1 = ax0 + (res.ok ? res.u : uT) * scale * 3;
+        var ay1 = ay0 + (res.ok ? res.v : vT) * scale * 3;
+        ctx.strokeStyle = res.ok ? WAVE : MUTED;
+        ctx.fillStyle = ctx.strokeStyle;
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.moveTo(ax0, ay0);
+        ctx.lineTo(ax1, ay1);
+        ctx.stroke();
+        // 简易箭头头
+        var ang = Math.atan2(ay1 - ay0, ax1 - ax0);
+        ctx.beginPath();
+        ctx.moveTo(ax1, ay1);
+        ctx.lineTo(ax1 - 10 * Math.cos(ang - 0.4), ay1 - 10 * Math.sin(ang - 0.4));
+        ctx.lineTo(ax1 - 10 * Math.cos(ang + 0.4), ay1 - 10 * Math.sin(ang + 0.4));
+        ctx.closePath();
+        ctx.fill();
+
+        var msg;
+        if (!res.ok) {
+          msg = "结构张量病态 / 纹理不足 → 不可靠。n=" + res.n
+            + "，ΣIx²=" + res.G11.toFixed(1)
+            + "，ΣIy²=" + res.G22.toFixed(1)
+            + "。试试「角点纹理」或加大窗口（平坦时加大也救不了）。";
+        } else {
+          var err = Math.hypot(res.u - uT, res.v - vT);
+          msg = "估得 (u,v)=(" + res.u.toFixed(2) + ", " + res.v.toFixed(2) + ")"
+            + "，真值 (" + uT.toFixed(1) + ", " + vT.toFixed(1) + ")"
+            + "，误差 " + err.toFixed(2) + " px。"
+            + " 方程 n=" + res.n
+            + "，ΣIx²=" + res.G11.toFixed(0)
+            + "，ΣIy²=" + res.G22.toFixed(0) + "。";
+        }
+        readout.textContent = msg;
+      }
+
+      winR.addEventListener("input", redraw);
+      trueU.addEventListener("input", redraw);
+      trueV.addEventListener("input", redraw);
+      document.getElementById("lk-corner").addEventListener("click", function () { mode = "corner"; redraw(); });
+      document.getElementById("lk-edge").addEventListener("click", function () { mode = "edge"; redraw(); });
+      document.getElementById("lk-flat").addEventListener("click", function () { mode = "flat"; redraw(); });
+      window.addEventListener("resize", redraw);
+      redraw();
+    })();
+  </script>
+</body>
+</html>

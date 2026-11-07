@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 2 篇 · 仿射、透视与齐次坐标</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        拼接与防抖 · 图像视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="01-coords.html">第 1 篇</a>
+        <a href="02-affine.html" aria-current="page">第 2 篇</a>
+        <a href="03-homography.html">第 3 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 2 篇 · 矩阵写法 · 约 50 分钟</p>
+    <h1>仿射、透视与齐次坐标</h1>
+    <p class="lede">第 1 篇的平移、旋转、缩放还拼不出「近大远小」。这一篇升到仿射与透视，并引入齐次坐标：多写一个 1，平移也能塞进矩阵乘法。页面里可以拖动四边形四个角。</p>
+    <div class="meta">
+      <span class="pill">先读：第 1 篇</span>
+      <span class="pill">第 3 篇的单应性建立在本篇透视上</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#why">为什么还要更强的变换</a></li>
+        <li><a href="#affine">仿射：平行四边形家族</a></li>
+        <li><a href="#homo">齐次坐标：把平移写进矩阵</a></li>
+        <li><a href="#persp">透视：最后一行也放开</a></li>
+        <li><a href="#try">拖四个角</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改目标四角</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="why">为什么还要更强的变换</h2>
+    <p>手机稍微倾斜着拍一张海报，矩形会变成梯形：上边短、下边长——这是<strong>透视</strong>。第 1 篇的相似变换（转+缩+移）保圆形仍圆、矩形仍矩形比例，做不到这种梯形。</p>
+    <p><strong>仿射</strong>更进一步，允许切变，能把矩形变成平行四边形，但<strong>平行线仍平行</strong>，仍然没有真正的灭点汇聚。</p>
+    <figure>
+      <img src="assets/figures/ch02_shapes.png" alt="矩形、仿射平行四边形、透视梯形">
+      <figcaption>图 2-1　左：原矩形。中：仿射后仍是平行四边形（对边平行）。右：透视后可以是一般梯形。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch02_dof.png" alt="平移相似仿射透视的自由度表">
+      <figcaption>图 2-2　自由度与最少对应点数。点数不够，矩阵就定不唯一；点太多则通常用最小二乘或 RANSAC（第 7 篇）。</figcaption>
+    </figure>
+
+    <h2 id="affine">仿射：平行四边形家族</h2>
+    <p>二维仿射把点写成：</p>
+    <p class="formula">x′ = a<sub>11</sub> x + a<sub>12</sub> y + t<sub>x</sub></p>
+    <p class="formula">y′ = a<sub>21</sub> x + a<sub>22</sub> y + t<sub>y</sub></p>
+    <p>一共 6 个数。它包含平移、旋转、缩放、切变。几何上：直线还是直线，平行还平行，矩形一般变成平行四边形。</p>
+    <p>OpenCV 用 <strong>3 对对应点</strong> 定仿射，再 <code>warpAffine</code>：</p>
+    <pre><code>M = cv2.getAffineTransform(src_tri, dst_tri)  # 2×3
+out = cv2.warpAffine(image, M, (W, H))</code></pre>
+    <figure>
+      <img src="assets/figures/ch02_affine_warp.png" alt="源图与仿射变换结果">
+      <figcaption>图 2-3　棋盘砖经仿射后，格子仍像被「斜推」过的平行四边形网，没有汇聚感。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch02_affine_matrix.png" alt="2×3 仿射矩阵数值">
+      <figcaption>图 2-4　左侧 2×2 混合了旋转/缩放/切变，最后一列是平移。这与第 1 篇 <code>getRotationMatrix2D</code> 的 2×3 是同一家族，只是更一般。</figcaption>
+    </figure>
+
+    <h2 id="homo">齐次坐标：把平移写进矩阵</h2>
+    <p>普通写法里，线性部分用矩阵乘，平移只能「再加一项」。齐次坐标多写一个分量，把点写成列向量 <code>(x, y, 1)</code>，于是仿射也能写成一次乘法：</p>
+    <p class="formula">(x′, y′, 1)<sup>T</sup> = A · (x, y, 1)<sup>T</sup></p>
+    <p>其中 A 是 3×3，且<strong>最后一行固定为 [0, 0, 1]</strong>。前面两行的六个自由数，正好对应仿射的 6 自由度。</p>
+    <figure>
+      <img src="assets/figures/ch02_homogeneous.png" alt="齐次坐标说明文字图">
+      <figcaption>图 2-5　记住两步：抬到三维（加 1）→ 乘 3×3 → 若第三维不是 1，再除掉它回到二维（透视时会用到）。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>算例：只平移 (3, −2)。齐次矩阵是对角 1，右上角平移列写 3 与 −2。乘上 (10, 20, 1) 得到 (13, 18, 1)。脚本自检里有同一例子。</p>
+    </div>
+
+    <h2 id="persp">透视：最后一行也放开</h2>
+    <p>若 3×3 矩阵 H 的最后一行不再锁死为 [0, 0, 1]，乘完后第三维 w 可能不是 1。还原平面坐标要做：</p>
+    <p class="formula">X = x<sub>h</sub> / w<sub>h</sub>，　Y = y<sub>h</sub> / w<sub>h</sub></p>
+    <p>这一除，引入了非线性，矩形可以变成梯形——就是透视（射影）变换。H 有 9 个数，但整体乘一个非零常数结果相同，所以<strong>实质 8 自由度</strong>。至少需要 <strong>4 对</strong>不共线对应点。</p>
+    <pre><code>H = cv2.getPerspectiveTransform(src_quad, dst_quad)  # 3×3
+out = cv2.warpPerspective(image, H, (W, H))</code></pre>
+    <figure>
+      <img src="assets/figures/ch02_perspective_warp.png" alt="透视变换到梯形目标">
+      <figcaption>图 2-6　源图四角映到目标四边形。格子出现近大远小；平行线在画面上可以交汇。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch02_homography_matrix.png" alt="3×3 单应矩阵数值">
+      <figcaption>图 2-7　注意第三行：一旦偏离 [0,0,1]，就是透视在起作用。第 3 篇会把这种 H 叫做两平面之间的单应性。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>拼接里：若场景近似一个平面（墙、远处风景），常用一个 H 把图 B 变到图 A。近景+大平移时视差太大，单个 H 会不够——第 3、11 篇再谈失败模式。</p>
+    </div>
+
+    <h2 id="try">拖四个角</h2>
+    <p>橙青四角是目标四边形。拖动它们，下方显示由「单位正方形 → 该四边形」估出的 H（示意数值）。若四边形扭成自交，提示会报警。</p>
+    <div class="playground">
+      <canvas id="quad-demo" class="demo tall" width="820" height="380" aria-label="拖动透视四边形四角"></canvas>
+      <div class="actions">
+        <button type="button" class="primary" id="quad-reset">恢复示例梯形</button>
+        <button type="button" id="quad-rect">拉回矩形</button>
+      </div>
+      <p class="readout" id="quad-readout" aria-live="polite"></p>
+      <pre id="quad-matrix" class="terminal" style="margin-top:0.75rem"></pre>
+    </div>
+
+    <h2 id="run">运行脚本</h2>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <pre class="terminal"><code>source .venv/bin/activate   # 若尚未激活
+python code/ch02_affine.py</code></pre>
+      <p>会写出 <code>ch02_shapes.png</code>、<code>ch02_affine_warp.png</code>、<code>ch02_perspective_warp.png</code>、<code>ch02_homogeneous.png</code> 等，以及你的 <code>ch02_my_perspective.png</code>。</p>
+    </div>
+
+    <h2 id="edit">改目标四角</h2>
+    <p>打开 <a href="code/ch02_affine.py"><code>code/ch02_affine.py</code></a>，改顶部 <code>DST_QUAD</code>（左上、右上、右下、左下）。</p>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>先改成接近矩形的四个点，运行后透视感应变弱，第三行应接近 <code>0, 0, 1</code>。</li>
+        <li>把上边两个点靠近、下边拉宽，加强梯形，观察格子的汇聚。</li>
+        <li>故意让四个点几乎共线或扭成蝴蝶结——<code>getPerspectiveTransform</code> 可能仍给出矩阵，但 warp 会很难看。这是在提示：对应点质量很重要。</li>
+      </ol>
+    </div>
+
+    <h2 id="check">自测</h2>
+    <details class="quiz">
+      <summary>1. 仿射和透视，谁还能保持「平行线平行」？</summary>
+      <p>仿射保持平行。透视一般不保持，可以出现灭点。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. 为什么说单应矩阵是 8 自由度，不是 9？</summary>
+      <p>H 与 λH（λ≠0）表示同一变换，整体尺度自由，因此 9−1=8。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. 齐次坐标里，仿射的 3×3 矩阵最后一行通常是什么？</summary>
+      <p>[0, 0, 1]。放开后才进入透视。</p>
+    </details>
+    <details class="quiz">
+      <summary>4. 估仿射至少几对点？估透视至少几对？</summary>
+      <p>仿射 3 对；透视 4 对（且不能退化，例如三点共线）。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>下一篇把透视矩阵正式叫做<strong>单应性</strong>：何时一张 H 就够，怎样 warp 到另一坐标系，以及大视差何时失效。</p>
+    <p><a href="03-homography.html">第 3 篇 · 单应性：两平面之间的通行证</a></p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="01-coords.html">上一篇</a>
+      <a href="index.html">目录</a>
+      <a href="03-homography.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+      var MUTED = "#5c564c";
+      var pts = [
+        { x: 120, y: 90 },
+        { x: 420, y: 50 },
+        { x: 460, y: 300 },
+        { x: 80, y: 280 }
+      ];
+      var drag = -1;
+
+      function surface(canvas) {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var width = canvas.clientWidth || 640;
+        var height = canvas.clientHeight || 380;
+        var pw = Math.round(width * dpr);
+        var ph = Math.round(height * dpr);
+        if (canvas.width !== pw || canvas.height !== ph) {
+          canvas.width = pw;
+          canvas.height = ph;
+        }
+        var ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(0, 0, width, height);
+        return { ctx: ctx, width: width, height: height };
+      }
+
+      function cross(a, b, c) {
+        return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+      }
+
+      function isConvex(p) {
+        var signs = [];
+        var i;
+        for (i = 0; i < 4; i++) {
+          var s = cross(p[i], p[(i + 1) % 4], p[(i + 2) % 4]);
+          signs.push(s);
+        }
+        var pos = signs.some(function (v) { return v > 1e-6; });
+        var neg = signs.some(function (v) { return v < -1e-6; });
+        return !(pos && neg);
+      }
+
+      // 单位正方形 -> 四边形的单应（直接线性变换 DLT 简化版）
+      function homographyFromUnitSquare(q) {
+        // 对单位正方形角点 (0,0),(1,0),(1,1),(0,1) 映到 q0..q3
+        // 使用 OpenCV 同款思路的解析解：解 8 元线性方程
+        var x = [q[0].x, q[1].x, q[2].x, q[3].x];
+        var y = [q[0].y, q[1].y, q[2].y, q[3].y];
+        var u = [0, 1, 1, 0];
+        var v = [0, 0, 1, 1];
+        var A = [];
+        var i;
+        for (i = 0; i < 4; i++) {
+          A.push([-u[i], -v[i], -1, 0, 0, 0, u[i] * x[i], v[i] * x[i], x[i]]);
+          A.push([0, 0, 0, -u[i], -v[i], -1, u[i] * y[i], v[i] * y[i], y[i]]);
+        }
+        // 高斯消元求零空间（最后一维固定 h33 相关：用 SVD 简化为最小二乘 h33=1 的 8 元）
+        // 改为假设 h33=1，解 8×8
+        var M = [];
+        var b = [];
+        for (i = 0; i < 4; i++) {
+          M.push([-u[i], -v[i], -1, 0, 0, 0, u[i] * x[i], v[i] * x[i]]);
+          b.push(-x[i]);
+          M.push([0, 0, 0, -u[i], -v[i], -1, u[i] * y[i], v[i] * y[i]]);
+          b.push(-y[i]);
+        }
+        var h8 = solve8(M, b);
+        if (!h8) return null;
+        return [
+          [h8[0], h8[1], h8[2]],
+          [h8[3], h8[4], h8[5]],
+          [h8[6], h8[7], 1]
+        ];
+      }
+
+      function solve8(M, b) {
+        // 增广矩阵高斯消元
+        var n = 8;
+        var a = M.map(function (row, i) { return row.concat([b[i]]); });
+        var i, j, k;
+        for (i = 0; i < n; i++) {
+          var piv = i;
+          for (k = i + 1; k < n; k++) {
+            if (Math.abs(a[k][i]) > Math.abs(a[piv][i])) piv = k;
+          }
+          if (Math.abs(a[piv][i]) < 1e-10) return null;
+          var tmp = a[i];
+          a[i] = a[piv];
+          a[piv] = tmp;
+          var div = a[i][i];
+          for (j = i; j <= n; j++) a[i][j] /= div;
+          for (k = 0; k < n; k++) {
+            if (k === i) continue;
+            var f = a[k][i];
+            for (j = i; j <= n; j++) a[k][j] -= f * a[i][j];
+          }
+        }
+        return a.map(function (row) { return row[n]; });
+      }
+
+      function applyH(H, x, y) {
+        var X = H[0][0] * x + H[0][1] * y + H[0][2];
+        var Y = H[1][0] * x + H[1][1] * y + H[1][2];
+        var W = H[2][0] * x + H[2][1] * y + H[2][2];
+        if (Math.abs(W) < 1e-9) return null;
+        return { x: X / W, y: Y / W };
+      }
+
+      function draw() {
+        var canvas = document.getElementById("quad-demo");
+        var box = surface(canvas);
+        var ctx = box.ctx;
+        var width = box.width;
+        var height = box.height;
+        var H = isConvex(pts) ? homographyFromUnitSquare(pts) : null;
+
+        // 棋盘纹理映射（反向采样示意）
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(pts[0].x, pts[0].y);
+        pts.slice(1).forEach(function (p) { ctx.lineTo(p.x, p.y); });
+        ctx.closePath();
+        ctx.clip();
+        if (H) {
+          // 粗网格：在目标四边形包围盒内取样
+          var minX = Math.min(pts[0].x, pts[1].x, pts[2].x, pts[3].x);
+          var maxX = Math.max(pts[0].x, pts[1].x, pts[2].x, pts[3].x);
+          var minY = Math.min(pts[0].y, pts[1].y, pts[2].y, pts[3].y);
+          var maxY = Math.max(pts[0].y, pts[1].y, pts[2].y, pts[3].y);
+          // 用正向：单位正方形网格推到目标
+          var gu, gv;
+          for (gu = 0; gu <= 8; gu++) {
+            ctx.beginPath();
+            for (gv = 0; gv <= 40; gv++) {
+              var p = applyH(H, gu / 8, gv / 40);
+              if (!p) continue;
+              if (gv === 0) ctx.moveTo(p.x, p.y);
+              else ctx.lineTo(p.x, p.y);
+            }
+            ctx.strokeStyle = gu === 0 || gu === 8 ? WAVE : "#d7cbb8";
+            ctx.lineWidth = gu === 0 || gu === 8 ? 2 : 1;
+            ctx.stroke();
+          }
+          for (gv = 0; gv <= 8; gv++) {
+            ctx.beginPath();
+            for (gu = 0; gu <= 40; gu++) {
+              var q = applyH(H, gu / 40, gv / 8);
+              if (!q) continue;
+              if (gu === 0) ctx.moveTo(q.x, q.y);
+              else ctx.lineTo(q.x, q.y);
+            }
+            ctx.strokeStyle = gv === 0 || gv === 8 ? TEAL : "#d7cbb8";
+            ctx.lineWidth = gv === 0 || gv === 8 ? 2 : 1;
+            ctx.stroke();
+          }
+        } else {
+          ctx.fillStyle = "#f3e6d8";
+          ctx.fillRect(0, 0, width, height);
+        }
+        ctx.restore();
+
+        ctx.beginPath();
+        ctx.moveTo(pts[0].x, pts[0].y);
+        pts.slice(1).forEach(function (p) { ctx.lineTo(p.x, p.y); });
+        ctx.closePath();
+        ctx.strokeStyle = "#1c1915";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        pts.forEach(function (p, i) {
+          ctx.fillStyle = i % 2 === 0 ? WAVE : TEAL;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = MUTED;
+          ctx.font = "13px Microsoft YaHei, sans-serif";
+          ctx.fillText("ABCD"[i], p.x + 10, p.y - 10);
+        });
+
+        var readout = document.getElementById("quad-readout");
+        var matrixEl = document.getElementById("quad-matrix");
+        if (!isConvex(pts)) {
+          readout.textContent = "当前四边形不是凸的（可能自交）。请拖开，使边不相交。";
+          matrixEl.textContent = "";
+          return;
+        }
+        if (!H) {
+          readout.textContent = "无法稳定求解 H（点配置可能退化）。";
+          matrixEl.textContent = "";
+          return;
+        }
+        readout.textContent = "已用单位正方形四角 → 当前四边形估 H。拖动角点看网格如何被透视拉扯；第三行偏离 0,0,1 时透视感更强。";
+        matrixEl.textContent = H.map(function (row) {
+          return row.map(function (v) { return (Math.abs(v) < 1e-4 ? 0 : v).toFixed(4).padStart(10, " "); }).join(" ");
+        }).join("\n");
+      }
+
+      function posFromEvent(canvas, e) {
+        var rect = canvas.getBoundingClientRect();
+        var clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        var clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        return {
+          x: ((clientX - rect.left) / rect.width) * (canvas.clientWidth || rect.width),
+          y: ((clientY - rect.top) / rect.height) * (canvas.clientHeight || rect.height)
+        };
+      }
+
+      var canvas = document.getElementById("quad-demo");
+      function pick(e) {
+        var p = posFromEvent(canvas, e);
+        var best = -1;
+        var bestD = 18;
+        pts.forEach(function (q, i) {
+          var d = Math.hypot(q.x - p.x, q.y - p.y);
+          if (d < bestD) {
+            bestD = d;
+            best = i;
+          }
+        });
+        drag = best;
+        if (e.preventDefault) e.preventDefault();
+      }
+      function move(e) {
+        if (drag < 0) return;
+        var p = posFromEvent(canvas, e);
+        pts[drag].x = Math.max(10, Math.min(canvas.clientWidth - 10, p.x));
+        pts[drag].y = Math.max(10, Math.min(canvas.clientHeight - 10, p.y));
+        draw();
+        if (e.preventDefault) e.preventDefault();
+      }
+      function up() { drag = -1; }
+
+      canvas.addEventListener("mousedown", pick);
+      window.addEventListener("mousemove", move);
+      window.addEventListener("mouseup", up);
+      canvas.addEventListener("touchstart", pick, { passive: false });
+      window.addEventListener("touchmove", move, { passive: false });
+      window.addEventListener("touchend", up);
+
+      document.getElementById("quad-reset").addEventListener("click", function () {
+        pts = [
+          { x: 120, y: 90 },
+          { x: 420, y: 50 },
+          { x: 460, y: 300 },
+          { x: 80, y: 280 }
+        ];
+        draw();
+      });
+      document.getElementById("quad-rect").addEventListener("click", function () {
+        pts = [
+          { x: 140, y: 70 },
+          { x: 420, y: 70 },
+          { x: 420, y: 290 },
+          { x: 140, y: 290 }
+        ];
+        draw();
+      });
+      window.addEventListener("resize", draw);
+      draw();
+    })();
+  </script>
+  <noscript>
+    <div class="wrap">
+      <p class="callout note">浏览器禁用脚本时无法拖角点。静态图与 Python 脚本仍可用。</p>
+    </div>
+  </noscript>
+</body>
+</html>

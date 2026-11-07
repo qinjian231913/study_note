@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 13 篇 · 深度学习特征：SuperPoint 与 LoFTR</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        拼接与防抖 · 图像视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="12-ba.html">第 12 篇</a>
+        <a href="13-learned.html" aria-current="page">第 13 篇</a>
+        <a href="14-flow-intro.html">第 14 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 13 篇 · 图片拼接收尾 · 约 55 分钟</p>
+    <h1>深度学习特征：SuperPoint 与 LoFTR</h1>
+    <p class="lede">前面用 ORB / SIFT 找对应点，本质是「人手写规则」。这一篇换一种思路：让网络从大量图对里<strong>学会</strong>哪里该点、指纹该长什么样；以及更激进的一步——干脆<strong>不先检测点</strong>，直接在两张特征图上做半稠密匹配（LoFTR）。本篇以概念与合成示意图为主，不要求本机装好 torch 权重。</p>
+    <div class="meta">
+      <span class="pill">先读：第 5–7 篇（特征与匹配直觉）更顺</span>
+      <span class="pill">本篇不强制 GPU / 预训练模型</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#why">为什么还要「可学习」特征</a></li>
+        <li><a href="#learn">可学习检测与描述：生活类比</a></li>
+        <li><a href="#sp">SuperPoint 解决什么</a></li>
+        <li><a href="#loftr">LoFTR 解决什么</a></li>
+        <li><a href="#table">与 ORB / SIFT 对照表</a></li>
+        <li><a href="#try">交互：拧纹理，看谁先垮</a></li>
+        <li><a href="#choose">选型建议</a></li>
+        <li><a href="#code">伪代码与脚本</a></li>
+        <li><a href="#edit">改这里</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="why">为什么还要「可学习」特征</h2>
+    <p>拼接流水线里，「找对应」是前半截的心脏：对应点够多、够准，后面的单应、BA、融合才有料可吃。ORB 快、SIFT 稳，但有两类场景经常让人手写特征难受：</p>
+    <ul>
+      <li><strong>弱纹理</strong>：白墙、天空、雪地、光滑地板。角点检测器几乎报不出点，后面再巧也估不出 H。</li>
+      <li><strong>大视角 / 光照变化</strong>：同一墙面，上午和傍晚、正面和斜侧，手写描述子的「指纹」可能对不上。</li>
+    </ul>
+    <p>深度学习特征的承诺很直白：用成千上万对「同一场景不同视角」的图训练，让网络自己总结「什么算好点、什么算好指纹」。它<strong>不是</strong>换掉整条拼接流水线，只是替换「检测 + 描述 + 匹配」这一环。</p>
+    <figure>
+      <img src="assets/figures/ch13_pipelines.png" alt="经典、SuperPoint、LoFTR 三条管线对照">
+      <figcaption>图 13-1　三条路最后都可以接到 RANSAC / 单应。差别在「点从哪来、匹配怎么做」。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>若你还没写过 ORB 匹配连线：先把第 6 篇当「手工版」，本篇当「学习版对照」。概念是同一张考卷，换了答题工具。</p>
+    </div>
+
+    <h2 id="learn">可学习检测与描述：生活类比</h2>
+    <p>把两张照片想成两份「寻宝图」。对齐它们，需要在两张图上圈出<strong>同一批地标</strong>，并确认「这个圈」对应「那个圈」。</p>
+    <ul>
+      <li><strong>检测（detection）</strong>：决定在哪里画圈。手写版常找角点——墙角、窗角、字的拐点。学习版让网络输出一张「兴趣热力图」，热的地方更值得画圈。</li>
+      <li><strong>描述（description）</strong>：给每个圈写一条「指纹」向量。手写版用梯度直方图（SIFT）或二进制串（ORB）。学习版用网络把小块图像编成浮点向量，训练目标是：同一物理点指纹靠近，不同点远离。</li>
+      <li><strong>匹配（matching）</strong>：在指纹空间里找最近邻，再过滤误匹配。学习特征可以仍走这条稀疏路线，也可以像 LoFTR 那样直接在特征图上「对座位」。</li>
+    </ul>
+    <p>训练时常用的监督信号（白话）：</p>
+    <p class="formula">同一 3D 点投影到两张图 → 检测位置应重复出现，描述向量应相似</p>
+    <p>网络并不「懂几何」，它只是在巨大样本上拟合这个目标。泛化好坏，取决于训练数据是否覆盖你的拍摄条件。</p>
+
+    <h2 id="sp">SuperPoint 解决什么</h2>
+    <p><strong>SuperPoint</strong>（Detone 等人，2018）把检测和描述塞进<strong>同一个</strong>卷积神经网络：共享编码器，再分出两个头。</p>
+    <ul>
+      <li><strong>检测头</strong>：输出兴趣点概率（哪里该点）。</li>
+      <li><strong>描述头</strong>：输出稠密描述图，再在兴趣点位置取样，得到每点一条描述子。</li>
+    </ul>
+    <p>它解决的痛点是：传统流程里「检测器用一套启发式、描述子用另一套启发式」，两者并不为彼此优化。SuperPoint 用自监督 / 合成单应等方法，让两头一起学，在视角变化下往往有更好的<strong>重复性</strong>（同一物理点更容易再次被点到）。</p>
+    <figure>
+      <img src="assets/figures/ch13_superpoint.png" alt="SuperPoint 结构示意">
+      <figcaption>图 13-2　SuperPoint 直觉：一张图进，出来稀疏关键点 + 每点指纹。后面仍可按经典方式做最近邻匹配。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>输出形态仍是<strong>稀疏点</strong>，和 ORB/SIFT 同一家族。差别在「点与指纹从哪来」。工程上常配 GPU；也有人用 TorchScript / TensorRT 部署。本课不下载权重，用示意脚本代替真实前向。</p>
+    </div>
+
+    <h2 id="loftr">LoFTR 解决什么</h2>
+    <p><strong>LoFTR</strong>（Sun 等人，CVPR 2021）走得更远：<strong>Detector-Free</strong>——不再先找兴趣点。做法是：</p>
+    <ol>
+      <li>两张图各抽特征图；</li>
+      <li>用 Transformer 在粗分辨率上做全局匹配（看上下文，不只看局部小窗）；</li>
+      <li>再在细分辨率上把对应位置抠准，得到<strong>半稠密</strong>点对。</li>
+    </ol>
+    <p>它主要解决：<strong>弱纹理、重复纹理</strong>时检测器失灵或乱点的问题。白墙上几乎没有角，但墙与墙的相对位置、门框边缘的弱结构，仍可能在特征图的全局注意力里对上。</p>
+    <figure>
+      <img src="assets/figures/ch13_loftr.png" alt="LoFTR 粗到细匹配示意">
+      <figcaption>图 13-3　LoFTR 不问「先找哪些点」，而问「整张特征图哪里对哪里」。代价是算力通常明显高于 ORB。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch13_weak_texture.png" alt="弱纹理下稀疏检测与半稠密匹配对比">
+      <figcaption>图 13-4　合成弱纹理：上排稀疏检测几乎没线可连；下排半稠密示意仍有一网格对应。这是「为什么有人上 LoFTR」的视觉答案。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch13_texture_curve.png" alt="纹理强度与点数曲线">
+      <figcaption>图 13-5　纹理拧低时，ORB-like 检测点数先掉；LoFTR 示意匹配对数更平。曲线来自合成参数，只表趋势。</figcaption>
+    </figure>
+
+    <h2 id="table">与 ORB / SIFT 对照表</h2>
+    <p>下表是工程选型用的<strong>直觉</strong>，不是论文跑分。真实毫秒数取决于分辨率、实现与硬件。</p>
+    <figure>
+      <img src="assets/figures/ch13_compare_table.png" alt="四种方法对照表">
+      <figcaption>图 13-6　速度、输出形态、弱纹理、是否需要学权重的对照。</figcaption>
+    </figure>
+    <div class="table-scroll">
+      <table>
+        <caption>表 13-1　同一句话版</caption>
+        <thead>
+          <tr><th>方法</th><th>一句话</th><th>GPU</th><th>弱纹理</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>ORB</td><td>CPU 实时练手首选</td><td>不需要</td><td>差</td></tr>
+          <tr><td>SIFT</td><td>经典质量向稀疏特征</td><td>不需要</td><td>偏弱</td></tr>
+          <tr><td>SuperPoint</td><td>可学习的「检测+描述」</td><td>强烈建议</td><td>好一些</td></tr>
+          <tr><td>LoFTR</td><td>半稠密、检测器无关</td><td>基本必需</td><td>明显更稳</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <figure>
+      <img src="assets/figures/ch13_method_gallery.png" alt="三种方法匹配示意画廊">
+      <figcaption>图 13-7　中等纹理下三种示意。真实 SuperPoint / LoFTR 的点分布会与本图不同，但「稀疏 vs 半稠密」的观感一致。</figcaption>
+    </figure>
+
+    <h2 id="try">交互：拧纹理，看谁先垮</h2>
+    <p>左侧模拟「稀疏检测」：纹理越低，橙点越少。右侧模拟「半稠密网格匹配」：纹理低时仍保留较多青线。这是浏览器里的玩具，不是真网络。</p>
+    <div class="playground">
+      <canvas id="tex-demo" class="demo tall" width="820" height="360" aria-label="纹理强度与匹配方式示意"></canvas>
+      <div class="controls">
+        <label for="tex">纹理强度</label>
+        <input id="tex" type="range" min="0" max="100" step="1" value="35">
+        <output id="tex-out" for="tex">35%</output>
+        <label for="mode">匹配方式</label>
+        <input id="mode" type="range" min="0" max="2" step="1" value="2">
+        <output id="mode-out" for="mode">LoFTR 示意</output>
+      </div>
+      <div class="actions">
+        <button type="button" class="primary" id="tex-weak">一键弱纹理</button>
+        <button type="button" id="tex-rich">一键富纹理</button>
+        <button type="button" id="tex-reset">恢复默认</button>
+      </div>
+      <p class="readout" id="tex-readout" aria-live="polite"></p>
+    </div>
+    <div class="callout note">
+      <p>模式 0 / 1 / 2 分别对应 ORB-like、SuperPoint 示意、LoFTR 示意。SuperPoint 示意在弱纹理时会「多留一点均匀点」，模拟学出来的重复性；LoFTR 示意则直接铺网格。</p>
+    </div>
+
+    <h2 id="choose">选型建议</h2>
+    <figure>
+      <img src="assets/figures/ch13_selection.png" alt="选型决策链">
+      <figcaption>图 13-8　先问有没有纹理、再问要不要实时 / 有没有 GPU。</figcaption>
+    </figure>
+    <ul>
+      <li><strong>课程 / 手机实时全景原型</strong>：先 ORB 把流水线跑通（检测→匹配→H→缝合）。</li>
+      <li><strong>离线、纹理尚可、有 GPU</strong>：可试 SuperPoint（或更新的 LightGlue 等匹配器）提升难度场景成功率。</li>
+      <li><strong>室内白墙、弱纹理救命</strong>：优先考虑 LoFTR 一类 detector-free；接受更慢、更吃显存。</li>
+      <li><strong>没有 GPU</strong>：老实待在 ORB/SIFT；不要指望本篇示意脚本「假装」出真实深度模型精度。</li>
+    </ul>
+    <div class="callout note">
+      <p>学习特征换的是「对应从哪来」。鬼影、曝光跳变、近景视差（第 10–11 篇）不会因为换了 SuperPoint 就消失。BA（第 12 篇）仍然有用：多图一起纠偏，和特征来源正交。</p>
+    </div>
+
+    <h2 id="code">伪代码与脚本</h2>
+    <figure>
+      <img src="assets/figures/ch13_pseudocode.png" alt="伪代码对照卡">
+      <figcaption>图 13-9　稀疏路线 vs LoFTR 路线。真正落地请用官方实现与权重。</figcaption>
+    </figure>
+    <pre><code># 稀疏（ORB / SIFT / SuperPoint 同一骨架）
+k1, d1 = detect_and_describe(imgA)
+k2, d2 = detect_and_describe(imgB)
+matches = nearest_neighbor(d1, d2)      # + Lowe 比率等
+H = cv2.findHomography(pts1, pts2, cv2.RANSAC)
+
+# LoFTR 骨架（示意）
+fA, fB = backbone(imgA), backbone(imgB)
+coarse = transformer_match(fA, fB)
+fine = refine(coarse)                   # 半稠密点对
+H = cv2.findHomography(fine.A, fine.B, cv2.RANSAC)</code></pre>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <p>本脚本<strong>不需要</strong> torch。在系列根目录：</p>
+      <pre class="terminal"><code>source .venv/bin/activate
+MPLCONFIGDIR=/tmp/mpl-cache python code/ch13_learned.py</code></pre>
+      <p>成功时终端打印「自检通过」，并写出 <code>ch13_pipelines.png</code>、<code>ch13_superpoint.png</code>、<code>ch13_loftr.png</code>、<code>ch13_weak_texture.png</code>、<code>ch13_compare_table.png</code>、<code>ch13_selection.png</code>、<code>ch13_method_gallery.png</code>、<code>ch13_texture_curve.png</code>、<code>ch13_pseudocode.png</code>，以及你的 <code>ch13_my_texture.png</code> / <code>ch13_my_matches.png</code>。</p>
+    </div>
+
+    <h2 id="edit">改这里</h2>
+    <p>打开 <a href="code/ch13_learned.py"><code>code/ch13_learned.py</code></a> 顶部参数。只影响 <code>ch13_my_*.png</code>。</p>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>把 <code>TEXTURE_LEVEL</code> 改成 <code>0.08</code>，<code>METHOD = "orb"</code>，运行。看 <code>ch13_my_matches.png</code> 连线是否很少。</li>
+        <li>保持弱纹理，改成 <code>METHOD = "loftr"</code>，再运行。网格对应应明显更多。</li>
+        <li>把 <code>TEXTURE_LEVEL = 0.8</code>，<code>METHOD = "superpoint"</code>，对比富纹理下三种方法差异变小。</li>
+        <li>改 <code>SHIFT_X</code> / <code>SHIFT_Y</code>（例如 40 与 15），确认匹配线仍大致平行（合成位移已知）。</li>
+      </ol>
+    </div>
+
+    <h2 id="check">自测</h2>
+    <p>先自己答，再展开。</p>
+    <details class="quiz">
+      <summary>1. SuperPoint 和 ORB 在「输出形态」上像不像？差在哪？</summary>
+      <p>都像：都是稀疏兴趣点 + 描述子再匹配。差在点与指纹是手写规则还是网络学出来的；SuperPoint 通常更吃 GPU，弱纹理/视角变化上往往更稳。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. LoFTR 说的 Detector-Free 是什么意思？它主要救哪类场景？</summary>
+      <p>意思是不先跑兴趣点检测，而直接在特征图上做（半）稠密匹配。主要救弱纹理、重复纹理等「检测器没点 / 乱点」的场景。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. 没有 GPU、要在笔记本 CPU 上实时拼全景，优先谁？</summary>
+      <p>优先 ORB（或同类 CPU 特征）。SuperPoint / LoFTR 虽强，但没 GPU 时延迟与功耗通常不划算；先保证流水线实时跑通。</p>
+    </details>
+    <details class="quiz">
+      <summary>4. 换上 LoFTR 之后，曝光跳变和近景视差会不会自动消失？</summary>
+      <p>不会。学习特征只改善「找对应」；曝光要补偿、视差会让单应失效，仍要靠第 10–11 篇的思路（或更复杂的多平面/网格变形）。</p>
+    </details>
+    <details class="quiz">
+      <summary>5. 本篇脚本为什么不强制下载 SuperPoint 权重？</summary>
+      <p>为了零基础环境也能跑通：用合成图建立直觉。真要上线，再按官方仓库装 torch、下权重、对真实照片跑前向。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>图片拼接线到这里收束。下一条主线进入<strong>光流</strong>：像素如何在两帧之间「流动」，以及为什么只看一条边会有孔径问题——这与防抖、跟踪共用底座。</p>
+    <p><a href="14-flow-intro.html">第 14 篇 · 光流是什么：亮度守恒与孔径问题</a></p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="12-ba.html">上一篇</a>
+      <a href="index.html">目录</a>
+      <a href="14-flow-intro.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+      var MUTED = "#5c564c";
+      var INK = "#1c1915";
+      var modeNames = ["ORB-like", "SuperPoint 示意", "LoFTR 示意"];
+
+      function surface(canvas) {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var width = canvas.clientWidth || 640;
+        var height = canvas.clientHeight || 360;
+        var pw = Math.round(width * dpr);
+        var ph = Math.round(height * dpr);
+        if (canvas.width !== pw || canvas.height !== ph) {
+          canvas.width = pw;
+          canvas.height = ph;
+        }
+        var ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(0, 0, width, height);
+        return { ctx: ctx, width: width, height: height };
+      }
+
+      function mulberry32(a) {
+        return function () {
+          var t = (a += 0x6d2b79f5);
+          t = Math.imul(t ^ (t >>> 15), t | 1);
+          t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+          return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        };
+      }
+
+      function drawPanel(ctx, x0, y0, w, h, texture, seed) {
+        var rnd = mulberry32(seed);
+        ctx.fillStyle = "#ece4d6";
+        ctx.fillRect(x0, y0, w, h);
+        var n = Math.floor(2 + texture * 22);
+        var i;
+        for (i = 0; i < n; i++) {
+          var bx = x0 + 10 + rnd() * (w - 40);
+          var by = y0 + 10 + rnd() * (h - 40);
+          var bw = 10 + rnd() * 28 * texture;
+          var bh = 8 + rnd() * 22 * texture;
+          var g = Math.floor(70 + 100 * texture);
+          ctx.fillStyle = "rgb(" + g + "," + (g - 8) + "," + (g + 12) + ")";
+          ctx.fillRect(bx, by, bw, bh);
+          ctx.strokeStyle = "#2a241c";
+          ctx.lineWidth = 1;
+          ctx.strokeRect(bx, by, bw, bh);
+        }
+        // 弱结构横线
+        ctx.strokeStyle = "rgba(60,55,50," + (0.15 + 0.55 * texture) + ")";
+        ctx.beginPath();
+        for (i = 0; i < 4; i++) {
+          var yy = y0 + h * (0.25 + i * 0.18);
+          ctx.moveTo(x0 + 8, yy);
+          ctx.lineTo(x0 + w - 8, yy);
+        }
+        ctx.stroke();
+        ctx.strokeStyle = WAVE;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x0 + 0.5, y0 + 0.5, w - 1, h - 1);
+      }
+
+      function sparsePoints(texture, mode, w, h, seed) {
+        var rnd = mulberry32(seed);
+        var pts = [];
+        var base = mode === 0 ? 4 + texture * 40 : 10 + texture * 36;
+        var n = Math.floor(base);
+        if (mode === 1 && texture < 0.25) n = Math.max(n, 12);
+        var i;
+        for (i = 0; i < n; i++) {
+          pts.push({
+            x: 16 + rnd() * (w - 32),
+            y: 16 + rnd() * (h - 32)
+          });
+        }
+        return pts;
+      }
+
+      function densePoints(w, h, stride) {
+        var pts = [];
+        var y, x;
+        for (y = stride / 2; y < h; y += stride) {
+          for (x = stride / 2; x < w; x += stride) {
+            pts.push({ x: x, y: y });
+          }
+        }
+        return pts;
+      }
+
+      function draw() {
+        var canvas = document.getElementById("tex-demo");
+        var box = surface(canvas);
+        var ctx = box.ctx;
+        var width = box.width;
+        var height = box.height;
+        var texture = Number(document.getElementById("tex").value) / 100;
+        var mode = Number(document.getElementById("mode").value);
+        document.getElementById("tex-out").textContent = Math.round(texture * 100) + "%";
+        document.getElementById("mode-out").textContent = modeNames[mode];
+
+        var gap = 18;
+        var panelW = (width - gap * 3) / 2;
+        var panelH = height - 56;
+        var y0 = 36;
+        var leftX = gap;
+        var rightX = gap * 2 + panelW;
+
+        drawPanel(ctx, leftX, y0, panelW, panelH, texture, 11);
+        drawPanel(ctx, rightX, y0, panelW, panelH, texture, 11);
+
+        ctx.fillStyle = INK;
+        ctx.font = "600 14px sans-serif";
+        ctx.fillText("图 A", leftX + 8, 24);
+        ctx.fillText("图 B（右移示意）", rightX + 8, 24);
+
+        var shift = 18;
+        var pairs = 0;
+        if (mode === 2) {
+          var dens = densePoints(panelW, panelH, 28);
+          dens.forEach(function (p) {
+            var ax = leftX + p.x;
+            var ay = y0 + p.y;
+            var bx = rightX + p.x - shift;
+            var by = y0 + p.y - 4;
+            if (bx < rightX + 4 || bx > rightX + panelW - 4) return;
+            ctx.strokeStyle = "rgba(14,107,102,0.45)";
+            ctx.beginPath();
+            ctx.moveTo(ax, ay);
+            ctx.lineTo(bx, by);
+            ctx.stroke();
+            ctx.fillStyle = WAVE;
+            ctx.beginPath();
+            ctx.arc(ax, ay, 2.5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = TEAL;
+            ctx.beginPath();
+            ctx.arc(bx, by, 2.5, 0, Math.PI * 2);
+            ctx.fill();
+            pairs += 1;
+          });
+        } else {
+          var pts = sparsePoints(texture, mode, panelW, panelH, 99 + mode);
+          var keepRnd = mulberry32(1234 + mode);
+          pts.forEach(function (p) {
+            var ax = leftX + p.x;
+            var ay = y0 + p.y;
+            var bx = rightX + p.x - shift;
+            var by = y0 + p.y - 4;
+            if (bx < rightX + 6 || bx > rightX + panelW - 6) return;
+            // 弱纹理下 ORB 稳定地丢掉一些点（种子随机，避免重绘闪烁）
+            if (mode === 0 && keepRnd() > 0.35 + texture * 0.7) return;
+            ctx.strokeStyle = "rgba(92,86,76,0.55)";
+            ctx.beginPath();
+            ctx.moveTo(ax, ay);
+            ctx.lineTo(bx, by);
+            ctx.stroke();
+            ctx.fillStyle = WAVE;
+            ctx.beginPath();
+            ctx.arc(ax, ay, 3, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = TEAL;
+            ctx.beginPath();
+            ctx.arc(bx, by, 3, 0, Math.PI * 2);
+            ctx.fill();
+            pairs += 1;
+          });
+        }
+
+        var tip =
+          mode === 2
+            ? "半稠密：不靠角点，网格上仍有约 " + pairs + " 对"
+            : "稀疏：当前约 " + pairs + " 对（纹理↓会变少）";
+        document.getElementById("tex-readout").textContent = tip;
+      }
+
+      ["tex", "mode"].forEach(function (id) {
+        document.getElementById(id).addEventListener("input", draw);
+      });
+      document.getElementById("tex-weak").addEventListener("click", function () {
+        document.getElementById("tex").value = "8";
+        document.getElementById("mode").value = "0";
+        draw();
+      });
+      document.getElementById("tex-rich").addEventListener("click", function () {
+        document.getElementById("tex").value = "85";
+        document.getElementById("mode").value = "2";
+        draw();
+      });
+      document.getElementById("tex-reset").addEventListener("click", function () {
+        document.getElementById("tex").value = "35";
+        document.getElementById("mode").value = "2";
+        draw();
+      });
+      window.addEventListener("resize", draw);
+      draw();
+    })();
+  </script>
+</body>
+</html>

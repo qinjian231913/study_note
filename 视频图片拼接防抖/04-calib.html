@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 4 篇 · 相机标定与去畸变</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        拼接与防抖 · 图像视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="03-homography.html">第 3 篇</a>
+        <a href="04-calib.html" aria-current="page">第 4 篇</a>
+        <a href="05-features.html">第 5 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 4 篇 · 镜头几何 · 约 55 分钟</p>
+    <h1>相机标定与去畸变</h1>
+    <p class="lede">真实镜头不是完美针孔：直线会被掰成桶形或枕形。拼接与稳像若在弯图上找特征、算光流，对应点会系统性偏掉。这一篇用小白话讲清内参、畸变、棋盘标定，以及 OpenCV 怎么把画面掰直。</p>
+    <div class="meta">
+      <span class="pill">先读：第 1–3 篇（坐标与变换）</span>
+      <span class="pill">后面特征匹配、拼接流水线都默认画面已较直</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#why">为什么拼接/稳像前要去畸变</a></li>
+        <li><a href="#pinhole">针孔模型与内参</a></li>
+        <li><a href="#distort">径向 / 切向畸变长什么样</a></li>
+        <li><a href="#try">滑块：看直线怎么弯</a></li>
+        <li><a href="#board">棋盘格标定流程（白话）</a></li>
+        <li><a href="#opencv">OpenCV：calibrateCamera / undistort</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改这里</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="why">为什么拼接/稳像前要去畸变</h2>
+    <p>第 3 篇的单应性、后面的特征匹配与光流，默认一件事：<strong>画面上的直线，在真实世界里大致也是直线</strong>（至少在同一平面投影模型下说得通）。广角镜头却常把建筑的竖边弯成弧——这叫<strong>镜头畸变</strong>。</p>
+    <p>常见两种径向畸变：</p>
+    <ul>
+      <li><strong>桶形</strong>：中间鼓、边缘直线向外弯，像酒桶侧面。手机广角很常见。</li>
+      <li><strong>枕形</strong>：中间瘪、边缘直线向内弯，像枕头凹陷。部分长焦会出现。</li>
+    </ul>
+    <p>若不去畸变就直接找角点、算光流：</p>
+    <ul>
+      <li>同一栋楼的竖边在左图和右图弯法不同（视角不同、离光轴远近不同），匹配会「对不齐」；</li>
+      <li>稳像若按弯图的运动去补偿，边缘会系统性晃或拉扯；</li>
+      <li>用平面单应去叠图时，弯边会变成接缝处的重影。</li>
+    </ul>
+    <figure>
+      <img src="assets/figures/ch04_why_undistort.png" alt="理想直线与桶形畸变后特征被带偏">
+      <figcaption>图 4-1　左：理想网格与窗框直线。右：桶形后直线变弯；若在弯边上取特征，对应关系会被畸变「带偏」。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>口诀：先把镜头模型学清楚、把图画直，再谈「两张图之间怎么对齐」。标定得到的是<strong>这台相机自己的</strong>内参与畸变；换镜头或变焦档，通常要重新标定。</p>
+    </div>
+
+    <h2 id="pinhole">针孔模型与内参</h2>
+    <p>先假装镜头是一个无限小的孔。世界里一点经过小孔，落在成像平面上一个位置——这就是<strong>针孔相机</strong>。真实镜头有玻璃、光圈，但工程上仍先用针孔当「理想几何」，再用畸变系数修补。</p>
+    <p>针孔模型里，和「这台传感器怎么把方向变成像素」有关的四个数，写成 3×3 的<strong>内参矩阵 K</strong>：</p>
+    <pre><code>K = [[ fx,  0, cx ],
+     [  0, fy, cy ],
+     [  0,  0,  1 ]]</code></pre>
+    <ul>
+      <li><strong>fx, fy</strong>：焦距，单位是像素。可以想成「放大倍数」：同样远的物体，fx 越大，在画面上越大（更像长焦）。fx 与 fy 分开，是因为像素可能不是完美正方形，或传感器有轻微缩放差。</li>
+      <li><strong>cx, cy</strong>：主点。光轴扎到传感器的位置。理想时大约在画面中心；实际可能偏几个到几十个像素。</li>
+    </ul>
+    <p>白话公式（还没加畸变）：相机坐标系里一点 <code>(X, Y, Z)</code>，先除以深度变成方向 <code>(X/Z, Y/Z)</code>，再乘 K，得到像素坐标。</p>
+    <p class="formula">u ≈ fx · (X/Z) + cx，　v ≈ fy · (Y/Z) + cy</p>
+    <figure>
+      <img src="assets/figures/ch04_pinhole_K.png" alt="针孔模型与内参四个数说明">
+      <figcaption>图 4-2　记住：K 管「理想投影」；畸变系数管「理想点被掰到哪里」。</figcaption>
+    </figure>
+
+    <h2 id="distort">径向 / 切向畸变长什么样</h2>
+    <p>OpenCV 常用一组畸变系数（常见写 5 个数）：</p>
+    <pre><code>dist = [k1, k2, p1, p2, k3]</code></pre>
+    <ul>
+      <li><strong>k1, k2, k3</strong>：径向。离主点越远，弯曲越明显。<code>k1 &lt; 0</code> 多表现为桶形；<code>k1 &gt; 0</code> 多表现为枕形（还受 k2、焦距影响，先抓这个直觉）。</li>
+      <li><strong>p1, p2</strong>：切向。来自透镜与传感器没有完美平行，画面像被轻轻「斜推」过，网格不再对称。</li>
+    </ul>
+    <p>合成实验：对同一张理想网格，分别加桶形、枕形、切向，一眼能看出差别。</p>
+    <figure>
+      <img src="assets/figures/ch04_distortion_types.png" alt="原图、桶形、枕形、切向畸变对照">
+      <figcaption>图 4-3　左上原图；右上桶形；左下枕形；右下切向（夸张了 p1、p2，便于看见）。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch04_undistort_compare.png" alt="理想、加畸变、undistort 三列对比">
+      <figcaption>图 4-4　用已知 K 与 dist：先把图弄弯，再 <code>cv2.undistort</code> 掰回。边缘可能略裁切或拉伸，这是正常的。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>去畸变不会「创造」丢失的信息：弯的时候挤在一起的细节，掰直后可能发糊；画面四角有时会出现黑边，需要裁切或换新的相机矩阵（进阶：<code>getOptimalNewCameraMatrix</code>）。</p>
+    </div>
+
+    <h2 id="try">滑块：看直线怎么弯</h2>
+    <p>下面画的是理想网格。拖动 <strong>k1</strong>（径向）和 <strong>p1</strong>（切向），看直线如何变弯。负的 k1 鼓成桶；正的 k1 收成枕；p1 会打破上下对称。</p>
+    <div class="playground">
+      <canvas id="dist-demo" class="demo tall" width="820" height="400" aria-label="畸变系数交互示意"></canvas>
+      <div class="controls">
+        <label for="k1">径向 k1</label>
+        <input id="k1" type="range" min="-80" max="80" step="1" value="-35">
+        <output id="k1-out" for="k1">-0.35</output>
+        <label for="k2">径向 k2</label>
+        <input id="k2" type="range" min="-40" max="40" step="1" value="5">
+        <output id="k2-out" for="k2">0.05</output>
+        <label for="p1">切向 p1</label>
+        <input id="p1" type="range" min="-40" max="40" step="1" value="0">
+        <output id="p1-out" for="p1">0.00</output>
+      </div>
+      <div class="actions">
+        <button type="button" class="primary" id="dist-reset">恢复桶形示例</button>
+        <button type="button" id="dist-zero">全部清零（理想）</button>
+        <button type="button" id="dist-pin">枕形示例</button>
+      </div>
+      <p class="readout" id="dist-readout" aria-live="polite"></p>
+    </div>
+    <p>建议：先把 k2、p1 清零，只拧 k1，体会桶/枕；再只拧 p1，看「斜推」。真实手机镜头 k1 往往是负的小数，这里刻意夸张，方便看见。</p>
+
+    <h2 id="board">棋盘格标定流程（白话）</h2>
+    <p>标定要回答：这台相机的 K 和 dist 各是多少？经典做法是拍一张<strong>已知几何</strong>的板子——黑白棋盘。内角点间距已知，计算机就能反推「镜头该怎么弯、焦距该多大」。</p>
+    <figure>
+      <img src="assets/figures/ch04_calib_pipeline.png" alt="标定四步流程图">
+      <figcaption>图 4-5　四步：多姿态拍照 → 找角点 → 估内参与畸变 → undistort。</figcaption>
+    </figure>
+    <ol>
+      <li><strong>多姿态拍照</strong>：同一张棋盘，换角度、距离、让板子靠近画面四角。只拍一张「正中平放」，参数会飘、不稳定。</li>
+      <li><strong>找内角点</strong>：OpenCV 的 <code>findChessboardCorners</code>（可再 <code>cornerSubPix</code> 精修）。得到每张图上角点的像素坐标。</li>
+      <li><strong>估参数</strong>：把「三维棋盘坐标 ↔ 二维像素」交给 <code>calibrateCamera</code>，它同时估 K、dist，以及每张图的外参（板子相对相机的姿态）。</li>
+      <li><strong>去畸变</strong>：之后任意照片用同一组 K、dist 做 <code>undistort</code>（或先算 remap 表再批量处理）。</li>
+    </ol>
+    <figure>
+      <img src="assets/figures/ch04_chess_poses.png" alt="合成的多种棋盘姿态角点">
+      <figcaption>图 4-6　脚本用合成姿态演示：角点网格在不同倾斜下的投影（已含畸变）。真机则是真实照片 + 自动找角点。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>打印棋盘时：纸要尽量平；方格实际边长要量准（或保证「所有格一样大」并在代码里写对尺寸）。模糊、反光、缺角会导致找不到角点。</p>
+    </div>
+
+    <h2 id="opencv">OpenCV：calibrateCamera / undistort</h2>
+    <p>最小逻辑（真机时 <code>img_points</code> 来自找角点；本篇脚本用合成角点演示同一 API）：</p>
+    <pre><code>rms, K, dist, rvecs, tvecs = cv2.calibrateCamera(
+    obj_points,   # 每张图：棋盘三维点列表
+    img_points,   # 每张图：对应像素点
+    image_size,   # (宽, 高)
+    None, None)
+
+straight = cv2.undistort(warped_image, K, dist)</code></pre>
+    <figure>
+      <img src="assets/figures/ch04_api_snippet.png" alt="API 示意代码">
+      <figcaption>图 4-7　两行核心：标定一次，之后每张图都可以 undistort。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch04_calib_result.png" alt="合成数据上标定结果与真值对照">
+      <figcaption>图 4-8　合成无噪声角点时，估计的 fx、k1 会非常接近真值；重投影 RMS 是「角点投回去差多少像素」的健康指标，越小越好。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch04_calib_undistort.png" alt="用估出的参数去畸变前后">
+      <figcaption>图 4-9　左：弯的；右：用标定估出的 K/dist 掰直。真机流程相同，只是输入换成照片。</figcaption>
+    </figure>
+    <p>真机最小循环可以记成：</p>
+    <pre><code>ok, corners = cv2.findChessboardCorners(gray, (cols, rows), None)
+# 多张成功图收集进 obj_points / img_points …
+rms, K, dist, _, _ = cv2.calibrateCamera(obj_points, img_points, size, None, None)
+out = cv2.undistort(frame, K, dist)</code></pre>
+
+    <h2 id="run">运行脚本</h2>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <pre class="terminal"><code>source .venv/bin/activate   # 若尚未激活
+python code/ch04_calib.py</code></pre>
+      <p>终端应出现「自检通过」，并写出课文对照图与 <code>ch04_my_undistort.png</code>。</p>
+      <ul>
+        <li>figures：<code>ch04_why_undistort.png</code>、<code>ch04_distortion_types.png</code>、<code>ch04_undistort_compare.png</code>、<code>ch04_calib_*.png</code> 等</li>
+        <li>images：<code>ch04_grid_*.png</code>、<code>ch04_barrel.png</code>、<code>ch04_distorted.png</code> 等</li>
+      </ul>
+    </div>
+
+    <h2 id="edit">改这里</h2>
+    <p>打开 <a href="code/ch04_calib.py"><code>code/ch04_calib.py</code></a>，只改顶部四个系数。</p>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>设 <code>MY_K1=0, MY_K2=0, MY_P1=0, MY_P2=0</code>，三列图应几乎一样（无弯可掰）。</li>
+        <li>设 <code>MY_K1=-0.5</code>（其余 0），中间更鼓，边缘直线更弯；undistort 后应变直。</li>
+        <li>设 <code>MY_K1=0.4</code>，观察枕形（向内收）。</li>
+        <li>设 <code>MY_P1=0.05, MY_P2=-0.04</code> 且 k 清零，看切向「斜推」；再 undistort 对照。</li>
+      </ol>
+    </div>
+
+    <h2 id="check">自测</h2>
+    <p>先自己答，再展开。</p>
+    <details class="quiz">
+      <summary>1. 拼接前为什么常要先去畸变？</summary>
+      <p>畸变把直线变弯，特征位置与光流被系统性带偏，单应/匹配更容易对不齐、接缝更容易重影。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. 内参里的 fx 和 cx 各管什么？</summary>
+      <p>fx 是焦距（像素），影响「物体有多大」；cx 是主点的 x，光轴落在传感器上的水平位置。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. 桶形和枕形，大致对应 k1 的正负直觉？</summary>
+      <p>常见说法：k1&lt;0 偏桶形（中间鼓），k1&gt;0 偏枕形（中间瘪）。以画面效果为准。</p>
+    </details>
+    <details class="quiz">
+      <summary>4. 棋盘标定为什么要拍很多张、很多姿态？</summary>
+      <p>一张约束太少、参数耦合；多姿态（尤其让板子靠近边缘）才能稳定分开焦距与畸变。</p>
+    </details>
+    <details class="quiz">
+      <summary>5. calibrateCamera 估完之后，日常处理新照片调用哪个函数掰直？</summary>
+      <p><code>cv2.undistort</code>（或预先 <code>initUndistortRectifyMap</code> + <code>remap</code>）。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>画面掰直之后，才能更放心地在重叠区找<strong>角点与特征</strong>：为什么平坦处难认，Harris / FAST 在看什么。</p>
+    <p><a href="05-features.html">第 5 篇 · 角点与特征点</a>（待写）</p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="03-homography.html">上一篇</a>
+      <a href="index.html">目录</a>
+      <a href="05-features.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+      var MUTED = "#5c564c";
+      var INK = "#1c1915";
+
+      function surface(canvas) {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var width = canvas.clientWidth || 640;
+        var height = canvas.clientHeight || 400;
+        var pw = Math.round(width * dpr);
+        var ph = Math.round(height * dpr);
+        if (canvas.width !== pw || canvas.height !== ph) {
+          canvas.width = pw;
+          canvas.height = ph;
+        }
+        var ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(0, 0, width, height);
+        return { ctx: ctx, width: width, height: height };
+      }
+
+      function distortPoint(x, y, cx, cy, f, k1, k2, p1) {
+        var xn = (x - cx) / f;
+        var yn = (y - cy) / f;
+        var r2 = xn * xn + yn * yn;
+        var radial = 1 + k1 * r2 + k2 * r2 * r2;
+        var xd = xn * radial + 2 * p1 * xn * yn;
+        var yd = yn * radial + p1 * (r2 + 2 * yn * yn);
+        return { x: xd * f + cx, y: yd * f + cy };
+      }
+
+      function drawPolyLine(ctx, pts, color, width) {
+        if (pts.length < 2) return;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width;
+        ctx.beginPath();
+        ctx.moveTo(pts[0].x, pts[0].y);
+        for (var i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+        ctx.stroke();
+      }
+
+      function drawDist() {
+        var canvas = document.getElementById("dist-demo");
+        var box = surface(canvas);
+        var ctx = box.ctx;
+        var w = box.width;
+        var h = box.height;
+        var k1 = Number(document.getElementById("k1").value) / 100;
+        var k2 = Number(document.getElementById("k2").value) / 100;
+        var p1 = Number(document.getElementById("p1").value) / 100;
+        var cx = w / 2;
+        var cy = h / 2 - 6;
+        var f = Math.min(w, h) * 0.72;
+
+        // 外框
+        ctx.strokeStyle = "#e6dccb";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(16, 16, w - 32, h - 48);
+
+        // 主点
+        ctx.fillStyle = TEAL;
+        ctx.beginPath();
+        ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+        ctx.fill();
+
+        var step = 36;
+        var margin = 40;
+        var samples = 48;
+
+        // 竖线（青）与横线（橙）
+        for (var x = margin; x <= w - margin; x += step) {
+          var pts = [];
+          for (var i = 0; i <= samples; i++) {
+            var y = margin + ((h - 48 - margin) * i) / samples;
+            pts.push(distortPoint(x, y, cx, cy, f, k1, k2, p1));
+          }
+          drawPolyLine(ctx, pts, TEAL, x === Math.round(cx / step) * step ? 2.2 : 1.2);
+        }
+        for (var y = margin; y <= h - 48 - 4; y += step) {
+          var pts2 = [];
+          for (var j = 0; j <= samples; j++) {
+            var xx = margin + ((w - 2 * margin) * j) / samples;
+            pts2.push(distortPoint(xx, y, cx, cy, f, k1, k2, p1));
+          }
+          drawPolyLine(ctx, pts2, WAVE, Math.abs(y - cy) < step / 2 ? 2.2 : 1.2);
+        }
+
+        ctx.fillStyle = MUTED;
+        ctx.font = "13px Microsoft YaHei, sans-serif";
+        ctx.fillText("青点=主点；橙=水平线，青=竖直线（经畸变）", 24, h - 18);
+
+        document.getElementById("k1-out").textContent = k1.toFixed(2);
+        document.getElementById("k2-out").textContent = k2.toFixed(2);
+        document.getElementById("p1-out").textContent = p1.toFixed(2);
+
+        var kind = "接近理想";
+        if (Math.abs(k1) < 0.02 && Math.abs(p1) < 0.02) kind = "接近理想直线";
+        else if (k1 < -0.05) kind = "桶形倾向（中间鼓）";
+        else if (k1 > 0.05) kind = "枕形倾向（中间瘪）";
+        if (Math.abs(p1) > 0.05) kind += "；切向斜推明显";
+
+        document.getElementById("dist-readout").textContent =
+          "k1 = " + k1.toFixed(2) + "，k2 = " + k2.toFixed(2) + "，p1 = " + p1.toFixed(2) +
+          "。当前：" + kind + "。";
+      }
+
+      ["k1", "k2", "p1"].forEach(function (id) {
+        document.getElementById(id).addEventListener("input", drawDist);
+      });
+      document.getElementById("dist-reset").addEventListener("click", function () {
+        document.getElementById("k1").value = "-35";
+        document.getElementById("k2").value = "5";
+        document.getElementById("p1").value = "0";
+        drawDist();
+      });
+      document.getElementById("dist-zero").addEventListener("click", function () {
+        document.getElementById("k1").value = "0";
+        document.getElementById("k2").value = "0";
+        document.getElementById("p1").value = "0";
+        drawDist();
+      });
+      document.getElementById("dist-pin").addEventListener("click", function () {
+        document.getElementById("k1").value = "35";
+        document.getElementById("k2").value = "5";
+        document.getElementById("p1").value = "0";
+        drawDist();
+      });
+      window.addEventListener("resize", drawDist);
+      drawDist();
+    })();
+  </script>
+  <noscript>
+    <div class="wrap">
+      <p class="callout note">浏览器禁用了脚本时，滑块不会动。上面的静态图和 Python 脚本仍然可以阅读、运行。</p>
+    </div>
+  </noscript>
+</body>
+</html>

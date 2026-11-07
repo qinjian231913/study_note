@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 20 篇 · 裁切、路径优化与 OIS / EIS 总览</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        拼接与防抖 · 图像视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="19-stabilize.html">第 19 篇</a>
+        <a href="20-crop-ois.html" aria-current="page">第 20 篇</a>
+        <a href="21-rolling-shutter.html">第 21 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 20 篇 · 稳像收尾与总览 · 约 50 分钟</p>
+    <h1>裁切、路径优化与 OIS / EIS 总览</h1>
+    <p class="lede">第 19 篇把晃动路径扳到平滑目标后，画面边缘常会露出黑边。本篇先搞清楚黑边从哪来、裁切比怎么定；再把「路径优化」说成人话——压掉高频手抖，尽量留下故意运镜；最后对比光学防抖 OIS 与电子防抖 EIS，为后面的陀螺仪 EIS 铺路。</p>
+    <div class="meta">
+      <span class="pill">先读：第 19 篇（轨迹平滑）</span>
+      <span class="pill">下一篇：Rolling Shutter</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#black">补偿之后：黑边从哪来</a></li>
+        <li><a href="#crop">裁切比：用视野换稳定</a></li>
+        <li><a href="#path">路径优化：压高频、留运镜</a></li>
+        <li><a href="#trade">过平滑的代价</a></li>
+        <li><a href="#ois-eis">OIS 与 EIS 怎么分工</a></li>
+        <li><a href="#gyro-road">为陀螺 EIS 铺路</a></li>
+        <li><a href="#try">网页里拧裁切与平滑</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改这里</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="black">补偿之后：黑边从哪来</h2>
+    <p>回顾第 19 篇的一句话：防抖常做的事，是估计「这一帧相对理想路径偏了多少」，再<strong>反向 warp</strong>把画面扳回去。</p>
+    <p>问题来了：原图像素是有限的矩形。你把整幅图往右挪 20 像素，左边就空出一条没有内容的缝——渲染时通常填成黑色。这就叫<strong>黑边</strong>。若补偿里还有旋转，四个角也会露出<strong>黑角</strong>。</p>
+    <figure>
+      <img src="assets/figures/ch20_black_border.png" alt="原始帧、平移补偿黑边、旋转补偿黑角三对照">
+      <figcaption>图 20-1　左：原始一帧。中：平移补偿后左边/下边露黑。右：旋转补偿后四角露黑。黑边不是「坏了」，是几何上必然会出现的空缺。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>生活类比：你把桌上的照片往右推一点，桌布左边就露出一块。防抖算法在「推照片」；裁切则是「只拍中间还能被盖住的区域」，假装桌布一直铺满。</p>
+    </div>
+    <figure>
+      <img src="assets/images/ch20_crop_box.png" alt="带黑边的帧上画出青色裁切框">
+      <figcaption>图 20-2　青色虚线框是准备保留的输出视野。框外的黑边（以及贴边的不可靠像素）会被裁掉；框内再放大到输出分辨率。</figcaption>
+    </figure>
+
+    <h2 id="crop">裁切比：用视野换稳定</h2>
+    <p><strong>裁切比</strong>可以先记成：</p>
+    <p class="formula">裁切比 ＝ 输出边长 ÷ 输入边长</p>
+    <p>例如输入宽 1920，输出宽 1728，裁切比约 0.90（常说「裁到 90%」）。比越小，中间留下的越少，视野越窄，但四周「安全垫」越厚——能容纳的补偿位移越大。</p>
+    <p>正方形画幅、中心裁切时，有一个好记的预算公式（单侧）：</p>
+    <p class="formula">单侧可补偿预算 ≈ 边长 × (1 − 裁切比) / 2</p>
+    <p>白话：裁切比 0.90、边长 400 像素 → 单侧大约还能挪 <code>400 × 0.10 / 2 = 20</code> 像素。某帧水平补偿若超过 20，裁切框就会撞上黑边（或你得再缩小裁切比）。</p>
+    <figure>
+      <img src="assets/figures/ch20_crop_ratio.png" alt="不同裁切框示意与预算曲线">
+      <figcaption>图 20-3　左：外框是原画幅，内框是不同裁切比。右：裁切越狠，单侧预算越大。EIS 本质上是在「稳」和「看得广」之间做交易。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch20_before_after.png" alt="输入、补偿出黑边、裁切放大三步">
+      <figcaption>图 20-4　同一帧三步：输入 → 补偿（出现黑边）→ 裁切放大（成片无黑边，但略「变焦」）。手机 EIS 预览里「画面比裸传感器稍窄」，多半就是这一层。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch20_budget.png" alt="补偿曲线与裁切预算上下限">
+      <figcaption>图 20-5　补偿曲线若始终落在预算虚线内，该裁切比「装得下」；一旦刺出虚线，就需要更大裁切，或减弱平滑/限制最大补偿。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>工程里裁切比怎么定？常见三条路：（1）固定比例，如 0.88～0.95，简单可预期；（2）先跑完全片，看最大补偿，再反推最小够用的比；（3）路径优化时把「裁切框」写成约束，强迫目标路径别离开安全区太远。本篇脚本演示的是（1）+（2）的直觉。</p>
+    </div>
+
+    <h2 id="path">路径优化：压高频、留运镜</h2>
+    <p>第 19 篇若只用「很大的滑动平均」，画面会变稳，但也可能把<strong>故意运镜</strong>一起抹掉：你本来想跟拍一个人从左走到右，结果成片像相机被粘在原地慢慢漂。</p>
+    <p>把路径拆成两层会好懂很多：</p>
+    <ul>
+      <li><strong>低频</strong>：慢慢平移、跟拍、推拉——这是「运镜」，多数时候想保留。</li>
+      <li><strong>高频</strong>：手抖、脚步颠簸、快门瞬间的颤——这是「抖」，想压掉。</li>
+    </ul>
+    <figure>
+      <img src="assets/figures/ch20_freq_split.png" alt="原始路径拆成运镜与抖动三行图">
+      <figcaption>图 20-6　上：原始路径。中：故意运镜（本篇用「中段快速跟拍」合成）。下：叠在上面的高频抖动。路径优化的目标，不是把曲线变成一条死直线，而是尽量只砍掉下面那一层。</figcaption>
+    </figure>
+    <p>本篇用的极简做法：</p>
+    <ol>
+      <li>对原始路径做<strong>适度</strong>滑动平均，得到偏稳的候选；</li>
+      <li>再按一个 <code>follow_strength</code> 往原始路径拉一点，避免漂得太远；</li>
+      <li>补偿量 ≈ 目标路径 − 原始路径。理想情况下，它应贴近「抖动分量」，而不是贴近「运镜」。</li>
+    </ol>
+    <figure>
+      <img src="assets/figures/ch20_path_optimize.png" alt="原始、运镜、过平滑、优化目标对照">
+      <figcaption>图 20-7　左：青色优化目标跟着跟拍转折走，棕色过平滑把转折抹钝了。右：补偿应像橙色抖动；棕色虚线表示「过平滑在误伤运镜」。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>论文里常见的「L1 最优相机路径」等，会显式写三项：要平滑、要靠近原路径、还要落在裁切允许的范围内。本篇不展开求解器，但三角关系已经齐了：<strong>稳 ↔ 跟得住运镜 ↔ 裁切预算</strong>。</p>
+    </div>
+
+    <h2 id="trade">过平滑的代价</h2>
+    <p>平滑窗口拉大，有两笔账同时变贵：</p>
+    <ol>
+      <li><strong>裁切更狠</strong>：目标路径离原始更远，补偿幅度变大，单侧预算不够用。</li>
+      <li><strong>运镜更假</strong>：跟拍的加速/减速被抹成慢坡，成片「发飘」。</li>
+    </ol>
+    <figure>
+      <img src="assets/figures/ch20_smooth_cost.png" alt="窗口增大时裁切预算与运镜误差双升">
+      <figcaption>图 20-8　左：窗口越大，需要的裁切预算越高。右：相对故意运镜的误差也升高——这就是「过稳」的代价。</figcaption>
+    </figure>
+    <p>实操口令：先用较小窗口压掉最刺眼的抖；若仍晃，再略加大，同时盯着裁切比和跟拍是否还在。不要一上来就「平均半秒」。</p>
+
+    <h2 id="ois-eis">OIS 与 EIS 怎么分工</h2>
+    <p>手机广告里的「光学防抖 / 电子防抖」不是同一种机器：</p>
+    <figure>
+      <img src="assets/figures/ch20_ois_eis.png" alt="OIS 与 EIS 对照卡片">
+      <figcaption>图 20-9　OIS 在曝光时用硬件微移稳住光线；EIS 用数字变换 + 裁切换稳定。二者常同时开，各管一段。</figcaption>
+    </figure>
+    <div class="table-scroll">
+      <table>
+        <caption>表 20-1　OIS / EIS 对照（零基础版）</caption>
+        <thead>
+          <tr><th></th><th>OIS 光学防抖</th><th>EIS 电子防抖</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>做什么</td><td>镜组或传感器物理位移</td><td>估路径 → warp → 裁切</td></tr>
+          <tr><td>何时生效</td><td>曝光过程中</td><td>成像后（或实时管线里）</td></tr>
+          <tr><td>擅长</td><td>高频小抖；减轻运动模糊</td><td>较大位移；可规划路径</td></tr>
+          <tr><td>不擅长</td><td>行程有限，大幅晃不动</td><td>吃像素；难「修好」已经糊掉的曝光</td></tr>
+          <tr><td>和裁切</td><td>基本不靠裁切换稳</td><td>几乎总要裁一圈安全边</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>所以你会看到组合拳：OIS 先把「糊」压住一点，EIS 再把「晃」的路径修顺。纯软件 EIS 再强，也变不出曝光瞬间没记下来的高频细节——这就是为什么光学仍然重要。</p>
+
+    <h2 id="gyro-road">为陀螺 EIS 铺路</h2>
+    <p>到目前为止，路径主要来自<strong>视觉</strong>：特征跟踪或光流估帧间变换，再累积。后面还会遇到两个硬问题：</p>
+    <ul>
+      <li><strong>Rolling Shutter</strong>（第 21 篇）：一帧里各行不是同一时刻拍的，快转时竖线变斜，「果冻」抖动。纯二维整帧 warp 会不够。</li>
+      <li><strong>陀螺仪 / IMU</strong>（第 22–23 篇）：传感器直接给角速度，积分成姿态，再反投到像素。低纹理、运动模糊、快速甩动时，往往比纯视觉稳；但也有漂移、外参、时间对齐要处理。</li>
+    </ul>
+    <figure>
+      <img src="assets/figures/ch20_pipeline.png" alt="从视觉路径到陀螺 EIS 的链路图">
+      <figcaption>图 20-10　本篇站在「路径优化 + 裁切 + OIS/EIS 分工」。下一站卷帘快门，再往后才是陀螺辅助的电子防抖。</figcaption>
+    </figure>
+    <p>读完本篇，你应能回答：为什么 EIS 一定要谈裁切？为什么「越稳越好」是错的？OIS 解决的和 EIS 解决的差在哪？——这些是读陀螺 EIS 前的共同语言。</p>
+
+    <h2 id="try">网页里拧裁切与平滑</h2>
+    <p>不装 Python 也能建立手感。上面画布是「原画幅」；青色框是裁切输出。下面曲线是路径：橙色原始，青色目标。</p>
+    <div class="playground">
+      <canvas id="crop-demo" class="demo" width="820" height="320" aria-label="裁切比与黑边示意"></canvas>
+      <div class="controls">
+        <label for="crop">裁切比</label>
+        <input id="crop" type="range" min="0.70" max="1.00" step="0.01" value="0.86">
+        <output id="crop-out" for="crop">0.86</output>
+        <label for="comp">本帧补偿（像素）</label>
+        <input id="comp" type="range" min="0" max="50" step="1" value="22">
+        <output id="comp-out" for="comp">22 px</output>
+      </div>
+      <p class="readout" id="crop-readout" aria-live="polite"></p>
+    </div>
+
+    <div class="playground">
+      <canvas id="path-demo" class="demo" width="820" height="300" aria-label="路径平滑强度示意"></canvas>
+      <div class="controls">
+        <label for="win">平滑窗口</label>
+        <input id="win" type="range" min="1" max="31" step="2" value="9">
+        <output id="win-out" for="win">9</output>
+        <label for="follow">跟随原始（越大越不稳）</label>
+        <input id="follow" type="range" min="0" max="0.8" step="0.05" value="0.25">
+        <output id="follow-out" for="follow">0.25</output>
+      </div>
+      <div class="actions">
+        <button type="button" class="primary" id="path-reset">恢复默认</button>
+      </div>
+      <p class="readout" id="path-readout" aria-live="polite"></p>
+    </div>
+
+    <h2 id="run">运行脚本</h2>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <p>在系列根目录（能看见 <code>index.html</code>）激活虚拟环境后：</p>
+      <pre class="terminal"><code>MPLCONFIGDIR=/tmp/mpl-cache .venv/bin/python code/ch20_crop_ois.py</code></pre>
+      <p>成功时终端打印「自检通过」，并写出课文对照图与「改这里」三张图：</p>
+      <ul>
+        <li><code>assets/figures/ch20_black_border.png</code>、<code>ch20_crop_ratio.png</code>、<code>ch20_freq_split.png</code>、<code>ch20_path_optimize.png</code>、<code>ch20_smooth_cost.png</code>、<code>ch20_ois_eis.png</code>、<code>ch20_pipeline.png</code>、<code>ch20_before_after.png</code>、<code>ch20_budget.png</code></li>
+        <li><code>assets/images/ch20_crop_box.png</code></li>
+        <li>你的图：<code>ch20_my_path.png</code>、<code>ch20_my_budget.png</code>、<code>ch20_my_crop.png</code>（及 <code>ch20_my_crop_view.png</code>）</li>
+      </ul>
+    </div>
+
+    <h2 id="edit">改这里</h2>
+    <p>打开 <a href="code/ch20_crop_ois.py"><code>code/ch20_crop_ois.py</code></a> 顶部「改这里」。只影响 <code>ch20_my_*.png</code>；课文图仍按固定参数重画。</p>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>把 <code>CROP_RATIO = 0.86</code> 改成 <code>0.95</code>，运行后看 <code>ch20_my_budget.png</code>：允许预算变窄，更容易「装不下」。</li>
+        <li>改成 <code>0.75</code>，预算变宽，但 <code>ch20_my_crop.png</code> 视野明显更窄。</li>
+        <li>把 <code>SMOOTH_WINDOW = 9</code> 改成 <code>25</code>，看 <code>ch20_my_path.png</code>：更稳，但跟拍转折更钝，预算更吃紧。</li>
+        <li>把 <code>SHAKE_AMP</code> 从 <code>22</code> 改成 <code>8</code> 再改成 <code>35</code>，观察预算自检从「装得下」到「装不下」。</li>
+      </ol>
+    </div>
+
+    <h2 id="check">自测</h2>
+    <p>先自己答，再展开。</p>
+    <details class="quiz">
+      <summary>1. 为什么做了补偿 warp 之后常常出现黑边？</summary>
+      <p>因为图像是有限矩形。把内容平移/旋转到「更稳」的位置后，画布边缘会露出没有像素的区域，通常被填成黑色。这是几何空缺，不是显示坏了。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. 裁切比从 0.95 改到 0.80，成片视野和可补偿预算各怎么变？</summary>
+      <p>视野变窄（输出只保留原图更中心的一块）。单侧可补偿预算变大：大约按边长 × (1−比)/2 增加，所以能扛更大的补偿位移，更不容易露黑边。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. 「路径优化」和「把路径抹成一条直线」有何不同？</summary>
+      <p>优化目标是压高频抖动、尽量保留故意运镜（跟拍/平移）。抹成直线等于过平滑：抖没了，运镜也没了，还往往需要更大裁切，成片发飘。</p>
+    </details>
+    <details class="quiz">
+      <summary>4. OIS 和 EIS 谁更擅长减轻运动模糊？谁更常依赖裁切？</summary>
+      <p>OIS 在曝光时用硬件微移稳住进光，更擅长减轻运动模糊。EIS 靠数字 warp + 裁切换稳定视野，几乎总要裁一圈；它难把已经糊掉的曝光「变清晰」。</p>
+    </details>
+    <details class="quiz">
+      <summary>5. 为什么后面还要引入陀螺仪，而不是一路把视觉 EIS 做完？</summary>
+      <p>纯视觉在低纹理、运动模糊、快速甩动时容易估不稳；陀螺直接测角速度，能为姿态/逐行补偿提供另一路信号。同时 Rolling Shutter 让「整帧一个变换」不够用——这些是第 21–23 篇的主题。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>二维稳像把「整帧」当成同一时刻。手机传感器却常常是<strong>一行一行</strong>曝光的。下一篇用动画看清：竖线为什么变斜、轮子为什么变椭圆，以及为什么稳像和光流都会被卷帘快门污染。</p>
+    <p><a href="21-rolling-shutter.html">第 21 篇 · Rolling Shutter：一行一行的时间差</a>（待写）</p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="19-stabilize.html">上一篇</a>
+      <a href="index.html">目录</a>
+      <a href="21-rolling-shutter.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var INK = "#1c1915";
+      var MUTED = "#5c564c";
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+      var N = 80;
+
+      function surface(canvas) {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var width = canvas.clientWidth || 640;
+        var height = canvas.clientHeight || 300;
+        var pw = Math.round(width * dpr);
+        var ph = Math.round(height * dpr);
+        if (canvas.width !== pw || canvas.height !== ph) {
+          canvas.width = pw;
+          canvas.height = ph;
+        }
+        var ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(0, 0, width, height);
+        return { ctx: ctx, width: width, height: height };
+      }
+
+      function drawMiniScene(ctx, x0, y0, w, h) {
+        ctx.fillStyle = "#ece4d6";
+        ctx.fillRect(x0, y0, w, h * 0.5);
+        ctx.fillStyle = "#d2c6b2";
+        ctx.fillRect(x0, y0 + h * 0.5, w, h * 0.5);
+        var buildings = [
+          [0.1, 0.4, "#5a6e96"],
+          [0.28, 0.32, "#466082"],
+          [0.5, 0.46, "#645a46"],
+          [0.72, 0.36, "#50786e"]
+        ];
+        buildings.forEach(function (b) {
+          var bw = w * 0.1;
+          var bh = h * b[1];
+          var bx = x0 + w * b[0];
+          var by = y0 + h * 0.5 - bh;
+          ctx.fillStyle = b[2];
+          ctx.fillRect(bx, by, bw, bh);
+        });
+        ctx.strokeStyle = "#f7f7f7";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        var y = y0 + h * 0.68;
+        for (var x = x0 + 8; x < x0 + w - 8; x += 34) {
+          ctx.moveTo(x, y);
+          ctx.lineTo(x + 18, y);
+        }
+        ctx.stroke();
+        ctx.fillStyle = "#327846";
+        ctx.beginPath();
+        ctx.arc(x0 + w * 0.4, y0 + h * 0.4, Math.min(w, h) * 0.07, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      function drawCrop() {
+        var canvas = document.getElementById("crop-demo");
+        var box = surface(canvas);
+        var ctx = box.ctx;
+        var W = box.width;
+        var H = box.height;
+        var ratio = Number(document.getElementById("crop").value);
+        var comp = Number(document.getElementById("comp").value);
+        document.getElementById("crop-out").textContent = ratio.toFixed(2);
+        document.getElementById("comp-out").textContent = comp + " px";
+
+        var frameW = Math.min(W * 0.72, 520);
+        var frameH = Math.min(H * 0.78, 240);
+        var fx = (W - frameW) / 2;
+        var fy = (H - frameH) / 2 - 6;
+
+        // 黑边：内容按补偿平移
+        ctx.fillStyle = "#111";
+        ctx.fillRect(fx, fy, frameW, frameH);
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(fx, fy, frameW, frameH);
+        ctx.clip();
+        drawMiniScene(ctx, fx + comp * 0.6, fy - comp * 0.35, frameW, frameH);
+        ctx.restore();
+
+        ctx.strokeStyle = INK;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(fx + 0.5, fy + 0.5, frameW - 1, frameH - 1);
+
+        var cw = frameW * ratio;
+        var ch = frameH * ratio;
+        var cx = fx + (frameW - cw) / 2;
+        var cy = fy + (frameH - ch) / 2;
+        ctx.strokeStyle = TEAL;
+        ctx.lineWidth = 2.5;
+        ctx.setLineDash([6, 4]);
+        ctx.strokeRect(cx, cy, cw, ch);
+        ctx.setLineDash([]);
+
+        var allow = (frameW * (1 - ratio)) / 2;
+        var ok = comp <= allow + 0.5;
+        var readout = document.getElementById("crop-readout");
+        readout.textContent =
+          "单侧预算 ≈ " +
+          allow.toFixed(1) +
+          " px（按画框宽度估）。本帧补偿 " +
+          comp +
+          " px → " +
+          (ok ? "裁切框装得下。" : "超出预算，框边会碰到黑边，需降低裁切比或减小补偿。");
+      }
+
+      function makeRaw() {
+        var raw = [];
+        var intent = [];
+        for (var i = 0; i < N; i++) {
+          var t = i / (N - 1);
+          var sweep = 1 / (1 + Math.exp(-16 * (t - 0.48)));
+          var ix = 30 + 55 * (0.12 * t + 0.88 * sweep);
+          var jx =
+            14 * Math.sin(2 * Math.PI * 7 * t) +
+            6 * Math.sin(2 * Math.PI * 10 * t + 0.4);
+          intent.push(ix);
+          raw.push(ix + jx);
+        }
+        return { raw: raw, intent: intent };
+      }
+
+      function movingAverage(arr, window) {
+        var w = Math.max(1, window | 0);
+        if (w % 2 === 0) w += 1;
+        if (w === 1) return arr.slice();
+        var pad = (w - 1) / 2;
+        var out = [];
+        for (var i = 0; i < arr.length; i++) {
+          var s = 0;
+          for (var k = -pad; k <= pad; k++) {
+            var j = Math.max(0, Math.min(arr.length - 1, i + k));
+            s += arr[j];
+          }
+          out.push(s / w);
+        }
+        return out;
+      }
+
+      var series = makeRaw();
+
+      function drawPath() {
+        var canvas = document.getElementById("path-demo");
+        var box = surface(canvas);
+        var ctx = box.ctx;
+        var W = box.width;
+        var H = box.height;
+        var win = Number(document.getElementById("win").value);
+        var follow = Number(document.getElementById("follow").value);
+        document.getElementById("win-out").textContent = String(win);
+        document.getElementById("follow-out").textContent = follow.toFixed(2);
+
+        var smooth = movingAverage(series.raw, win);
+        var target = smooth.map(function (s, i) {
+          return (1 - follow) * s + follow * series.raw[i];
+        });
+        var over = movingAverage(series.raw, 31);
+
+        var padL = 48;
+        var padR = 16;
+        var padT = 24;
+        var padB = 36;
+        var minY = Math.min.apply(null, series.raw.concat(series.intent, over));
+        var maxY = Math.max.apply(null, series.raw.concat(series.intent, over));
+        var span = maxY - minY || 1;
+
+        function X(i) {
+          return padL + (i / (N - 1)) * (W - padL - padR);
+        }
+        function Y(v) {
+          return padT + (1 - (v - minY) / span) * (H - padT - padB);
+        }
+
+        function stroke(arr, color, width, dash) {
+          ctx.beginPath();
+          ctx.strokeStyle = color;
+          ctx.lineWidth = width;
+          ctx.setLineDash(dash || []);
+          arr.forEach(function (v, i) {
+            var x = X(i);
+            var y = Y(v);
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          });
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+
+        ctx.strokeStyle = "#e6dccb";
+        ctx.lineWidth = 1;
+        for (var g = 0; g < 5; g++) {
+          var gy = padT + ((H - padT - padB) * g) / 4;
+          ctx.beginPath();
+          ctx.moveTo(padL, gy);
+          ctx.lineTo(W - padR, gy);
+          ctx.stroke();
+        }
+
+        stroke(series.raw, WAVE, 1.6);
+        stroke(series.intent, MUTED, 1.5, [5, 4]);
+        stroke(over, "#b08968", 1.8);
+        stroke(target, TEAL, 2.4);
+
+        ctx.fillStyle = INK;
+        ctx.font = "12px sans-serif";
+        ctx.fillText("橙=原始  灰虚=运镜  棕=过平滑  青=优化目标", padL, 16);
+
+        var maxComp = 0;
+        for (var i = 0; i < N; i++) {
+          maxComp = Math.max(maxComp, Math.abs(target[i] - series.raw[i]));
+        }
+        document.getElementById("path-readout").textContent =
+          "最大补偿约 " +
+          maxComp.toFixed(1) +
+          " px。窗口越大越稳、裁切越吃紧；跟随越大越贴原始，抖也会回来。";
+      }
+
+      ["crop", "comp"].forEach(function (id) {
+        document.getElementById(id).addEventListener("input", drawCrop);
+      });
+      ["win", "follow"].forEach(function (id) {
+        document.getElementById(id).addEventListener("input", drawPath);
+      });
+      document.getElementById("path-reset").addEventListener("click", function () {
+        document.getElementById("win").value = "9";
+        document.getElementById("follow").value = "0.25";
+        drawPath();
+      });
+      window.addEventListener("resize", function () {
+        drawCrop();
+        drawPath();
+      });
+      drawCrop();
+      drawPath();
+    })();
+  </script>
+  <noscript>
+    <div class="wrap">
+      <p class="callout note">浏览器禁用脚本时无法使用交互示意。静态图与 Python 脚本仍可用。</p>
+    </div>
+  </noscript>
+</body>
+</html>

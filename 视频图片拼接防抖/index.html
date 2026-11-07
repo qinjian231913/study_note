@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>图片拼接与视频防抖入门</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        拼接与防抖 · 图像视频
+      </a>
+      <nav>
+        <a href="../index.html">总目录</a>
+        <a href="index.html" aria-current="page">目录</a>
+        <a href="00-intro.html">第 0 篇</a>
+        <a href="01-coords.html">第 1 篇</a>
+        <a href="02-affine.html">第 2 篇</a>
+        <a href="#track-flow">光流重点</a>
+        <a href="#track-gyro">陀螺与 RS</a>
+      </nav>
+    </header>
+
+    <p class="kicker">从两张重叠照片开始</p>
+    <h1>图片拼接与视频防抖</h1>
+    <p class="lede">这套笔记假定你能读懂一点矩阵和坐标，但不要求先学过计算机视觉，也不要求你已经懂光流。每一篇都从能看见的现象写起。公式旁边有白话，页面里有可拖动的示意，文件夹里有可直接运行的 Python 脚本。</p>
+
+    <div class="callout note">
+      <p>当前状态：第 0–26 篇正文均已写完。可从目录按序阅读；光流重点为第 14–18 篇，陀螺与 RS 为第 21–23 篇。</p>
+    </div>
+
+    <h2>四条主线</h2>
+    <ol>
+      <li><strong>几何与配准</strong>（第 0–7 篇）：坐标、变换、标定、特征、匹配、单应性。</li>
+      <li><strong>图片拼接</strong>（第 8–13 篇）：流水线、投影、融合、曝光，以及 Bundle Adjustment 与深度学习特征。</li>
+      <li><strong>光流重点</strong>（第 14–18 篇）：从零建立「像素怎么动」；稀疏 → 金字塔跟踪 → 稠密 → 评估与坑。</li>
+      <li><strong>防抖、陀螺、RS 与视频</strong>（第 19–26 篇）：二维稳像、路径优化、Rolling Shutter、陀螺仪 EIS、3D 稳像、视频拼接与实战。</li>
+    </ol>
+
+    <h2>章节卡片</h2>
+    <div class="cards">
+      <a class="card" href="00-intro.html">
+        <span class="pill">第 0 篇 · 约 40 分钟 · 已写</span>
+        <h2>现象、目标与开发环境</h2>
+        <p>拼接与防抖各自解决什么；装好 Python / NumPy / OpenCV，跑通读写图与画框。</p>
+      </a>
+      <a class="card" href="01-coords.html">
+        <span class="pill">第 1 篇 · 约 45 分钟 · 已写</span>
+        <h2>图像坐标与刚体直觉</h2>
+        <p>像素坐标约定；平移、旋转、缩放 = 改坐标再重采样。</p>
+      </a>
+      <a class="card" href="02-affine.html">
+        <span class="pill">第 2 篇 · 约 50 分钟 · 已写</span>
+        <h2>仿射、透视与齐次坐标</h2>
+        <p>仿射到透视；齐次坐标把平移写进矩阵；拖四角看变换。</p>
+      </a>
+      <a class="card" href="03-homography.html">
+        <span class="pill">第 3 篇 · 约 50 分钟 · 已写</span>
+        <h2>单应性：两平面之间的通行证</h2>
+        <p>3×3 的 H 何时够用；warp 到另一坐标系；大视差何时失效。</p>
+      </a>
+      <a class="card" href="04-calib.html">
+        <span class="pill">第 4 篇 · 约 55 分钟 · 已写</span>
+        <h2>相机标定与去畸变</h2>
+        <p>内参、畸变系数；棋盘格标定；拼接/稳像前为什么要先「掰直」镜头。</p>
+      </a>
+      <a class="card" href="05-features.html">
+        <span class="pill">第 5 篇 · 约 50 分钟 · 已写</span>
+        <h2>角点与特征点</h2>
+        <p>为什么平坦处难认；Harris / FAST 直觉；尺度与模糊的影响。</p>
+      </a>
+      <a class="card" href="06-matching.html">
+        <span class="pill">第 6 篇 · 约 55 分钟 · 已写</span>
+        <h2>描述子与特征匹配</h2>
+        <p>ORB / SIFT；暴力匹配与 Lowe 比率；画出连线认清误匹配。</p>
+      </a>
+      <a class="card" href="07-ransac.html">
+        <span class="pill">第 7 篇 · 约 55 分钟 · 已写</span>
+        <h2>RANSAC 与鲁棒估计单应性</h2>
+        <p>随机抽样扛外点；估计 H、数内点、可视化内点/外点。</p>
+      </a>
+      <a class="card" href="08-stitch.html">
+        <span class="pill">第 8 篇 · 约 50 分钟 · 已写</span>
+        <h2>全景拼接流水线（总览）</h2>
+        <p>检测 → 匹配 → 估计 → 画布 → 叠图；两图到多图。</p>
+      </a>
+      <a class="card" href="09-projection.html">
+        <span class="pill">第 9 篇 · 约 50 分钟 · 已写</span>
+        <h2>投影模型：平面、柱面、球面</h2>
+        <p>广角环拍为何要「卷」到曲面；三种投影对照。</p>
+      </a>
+      <a class="card" href="10-blend.html">
+        <span class="pill">第 10 篇 · 约 50 分钟 · 已写</span>
+        <h2>接缝寻找与图像融合</h2>
+        <p>羽化、多频段融合、图割找缝；减少硬边与重影。</p>
+      </a>
+      <a class="card" href="11-exposure.html">
+        <span class="pill">第 11 篇 · 约 45 分钟 · 已写</span>
+        <h2>曝光补偿、鬼影与常见失败</h2>
+        <p>亮度跳变、动态物体、视差；失败样例与拍摄建议。</p>
+      </a>
+      <a class="card" href="12-ba.html">
+        <span class="pill">第 12 篇 · 约 55 分钟 · 已写</span>
+        <h2>Bundle Adjustment：多图一起纠偏</h2>
+        <p>累积误差从哪来；用全局优化把相机位姿与点一起调顺（白话）。</p>
+      </a>
+      <a class="card" href="13-learned.html">
+        <span class="pill">第 13 篇 · 约 50 分钟 · 已写</span>
+        <h2>深度学习特征：SuperPoint 与 LoFTR</h2>
+        <p>可学习检测/描述与半稠密匹配；和 ORB/SIFT 对照适用场景。</p>
+      </a>
+      <a class="card" href="14-flow-intro.html">
+        <span class="pill">第 14 篇 · 重点 · 约 55 分钟 · 已写</span>
+        <h2>光流是什么：亮度守恒与孔径问题</h2>
+        <p>小白起点：光流不是物体「真实 3D 速度」；亮度守恒假设；孔径问题为何让法向模糊。</p>
+      </a>
+      <a class="card" href="15-lucas-kanade.html">
+        <span class="pill">第 15 篇 · 重点 · 约 60 分钟 · 已写</span>
+        <h2>稀疏光流：Lucas-Kanade</h2>
+        <p>小窗口里「大家一起平移」；法方程怎么来；何时假设成立、何时碎掉。</p>
+      </a>
+      <a class="card" href="16-pyramid-lk.html">
+        <span class="pill">第 16 篇 · 重点 · 约 55 分钟 · 已写</span>
+        <h2>金字塔 LK 与特征点跟踪</h2>
+        <p>大位移怎么办；图像金字塔由粗到细；跟丢、漂移与前后向检验。</p>
+      </a>
+      <a class="card" href="17-dense-flow.html">
+        <span class="pill">第 17 篇 · 重点 · 约 60 分钟 · 已写</span>
+        <h2>稠密光流：从方程到 Farneback</h2>
+        <p>每个像素一个向量；平滑先验的直觉；Farneback 多项式展开白话与 OpenCV 实操。</p>
+      </a>
+      <a class="card" href="18-flow-eval.html">
+        <span class="pill">第 18 篇 · 重点 · 约 50 分钟 · 已写</span>
+        <h2>光流可视化、评估与常见坑</h2>
+        <p>箭头图与色轮；端点误差；遮挡、光照变化、运动模糊；深度学习光流一瞥。</p>
+      </a>
+      <a class="card" href="19-stabilize-2d.html">
+        <span class="pill">第 19 篇 · 约 55 分钟 · 已写</span>
+        <h2>二维视频防抖：轨迹平滑</h2>
+        <p>估变换 → 累积路径 → 平滑 → 补偿；「稳」从路径差里来。</p>
+      </a>
+      <a class="card" href="20-crop-ois.html">
+        <span class="pill">第 20 篇 · 约 50 分钟 · 已写</span>
+        <h2>裁切、路径优化与 OIS / EIS 总览</h2>
+        <p>黑边与裁切比；保留运镜的路径优化；光学 vs 电子防抖分工。</p>
+      </a>
+      <a class="card" href="21-rolling-shutter.html">
+        <span class="pill">第 21 篇 · 重点 · 约 60 分钟 · 已写</span>
+        <h2>Rolling Shutter：一行一行的时间差</h2>
+        <p>全局快门 vs 卷帘；斜切、抖动果冻、弯柱子；逐行曝光的几何模型。</p>
+      </a>
+      <a class="card" href="22-gyro-imu.html">
+        <span class="pill">第 22 篇 · 重点 · 约 60 分钟 · 已写</span>
+        <h2>陀螺仪与 IMU：角速度如何变成姿态</h2>
+        <p>三轴角速度、积分与漂移；采样率与视频帧时间戳对齐；读一份真实 IMU 日志。</p>
+      </a>
+      <a class="card" href="23-gyro-eis.html">
+        <span class="pill">第 23 篇 · 重点 · 约 60 分钟 · 已写</span>
+        <h2>陀螺仪电子防抖与 RS 校正</h2>
+        <p>用姿态反推像素补偿；和纯视觉 EIS 对照；用陀螺信息减轻 rolling shutter 畸变。</p>
+      </a>
+      <a class="card" href="24-stabilize-3d.html">
+        <span class="pill">第 24 篇 · 约 50 分钟 · 已写</span>
+        <h2>3D 稳像与虚拟相机路径</h2>
+        <p>不止 2D 仿射：在 3D 里规划一条更稳的「虚拟相机」路径。</p>
+      </a>
+      <a class="card" href="25-video-stitch.html">
+        <span class="pill">第 25 篇 · 约 50 分钟 · 已写</span>
+        <h2>视频拼接与时空一致性</h2>
+        <p>同步、时序平滑、接缝不闪；最小可行做法与难点地图。</p>
+      </a>
+      <a class="card" href="26-projects.html">
+        <span class="pill">第 26 篇 · 约 60 分钟 · 已写</span>
+        <h2>端到端实战三则</h2>
+        <p>拼全景；二维视觉防抖；陀螺辅助稳像 / RS 校正（有数据时）。</p>
+      </a>
+    </div>
+
+    <h2>怎么读</h2>
+    <ol>
+      <li>用浏览器打开本页，按顺序进入每一篇（正文完成后生效）。直接双击 <code>index.html</code> 即可。</li>
+      <li>最关心光流：第 0–3 篇打底后，可跳到第 14 篇；稳像与陀螺建议读完光流再进第 19 篇。</li>
+      <li>先拖页面里的示意，再运行对应 Python 脚本。脚本顶部「改这里」就是练习。</li>
+    </ol>
+    <div class="callout note">
+      <p>第 0 篇会带你安装 <code>numpy</code>、<code>opencv-python</code> 和 <code>matplotlib</code>。只做静态全景可在第 13 篇后停；光流小白请把第 14–18 篇当核心课连读。</p>
+    </div>
+
+    <h2>整套路线与章节简介</h2>
+    <ol class="route">
+      <li id="ch00">
+        <span class="no">第 0 篇</span>
+        <span>
+          <strong><a href="00-intro.html">现象、目标与开发环境</a></strong>
+          <span class="goal">看两张重叠照片「对不齐」、一段晃动视频。分清：拼接要更大视野，防抖要更稳的观察。装好环境，用 OpenCV 读图、画框、写视频帧，确认工具链可用。</span>
+        </span>
+        <span class="pill">已写</span>
+      </li>
+      <li id="ch01">
+        <span class="no">第 1 篇</span>
+        <span>
+          <strong><a href="01-coords.html">图像坐标与刚体直觉</a></strong>
+          <span class="goal">约定像素坐标：原点、x/y 朝向。亲手做平移、旋转、缩放，建立「变换 = 改坐标再重采样」的直觉。</span>
+        </span>
+        <span class="pill">已写</span>
+      </li>
+      <li id="ch02">
+        <span class="no">第 2 篇</span>
+        <span>
+          <strong><a href="02-affine.html">仿射、透视与齐次坐标</a></strong>
+          <span class="goal">仿射能切变、处理不了近大远小；透视能。齐次坐标把平移写进矩阵乘法。页面里拖四边形四角，对照矩阵条目变化。</span>
+        </span>
+        <span class="pill">已写</span>
+      </li>
+      <li id="ch03">
+        <span class="no">第 3 篇</span>
+        <span>
+          <strong><a href="03-homography.html">单应性：两平面之间的通行证</a></strong>
+          <span class="goal">平面（或近似平面）场景下，对应点由 3×3 的 H 联系。用已知点估计 H，用 <code>warpPerspective</code> 叠图。明确大视差时单应性失效。</span>
+        </span>
+        <span class="pill">已写</span>
+      </li>
+      <li id="ch04">
+        <span class="no">第 4 篇</span>
+        <span>
+          <strong><a href="04-calib.html">相机标定与去畸变</a></strong>
+          <span class="goal">内参矩阵与径向/切向畸变是什么。棋盘格标定流程，把「桶形/枕形」掰直。说明：拼接与基于几何的稳像，常常要先去畸变，否则特征与光流都会被弯边带偏。</span>
+        </span>
+        <span class="pill">已写</span>
+      </li>
+      <li id="ch05">
+        <span class="no">第 5 篇</span>
+        <span>
+          <strong><a href="05-features.html">角点与特征点</a></strong>
+          <span class="goal">平坦区域难匹配。Harris / FAST 用「窗口滑动看灰度变化」讲清检测。在真实图上标点，观察尺度、模糊对检测的影响。</span>
+        </span>
+        <span class="pill">已写</span>
+      </li>
+      <li id="ch06">
+        <span class="no">第 6 篇</span>
+        <span>
+          <strong><a href="06-matching.html">描述子与特征匹配</a></strong>
+          <span class="goal">检测给位置，描述子给指纹。ORB（快）与 SIFT（稳）的直觉差异。暴力匹配、Lowe 比率检验，专门挑出误匹配样例。</span>
+        </span>
+        <span class="pill">已写</span>
+      </li>
+      <li id="ch07">
+        <span class="no">第 7 篇</span>
+        <span>
+          <strong><a href="07-ransac.html">RANSAC 与鲁棒估计单应性</a></strong>
+          <span class="goal">匹配必有外点。RANSAC：抽样本 → 拟合 → 数内点 → 留最好模型。接到 <code>findHomography</code>，可视化内点/外点。</span>
+        </span>
+        <span class="pill">已写</span>
+      </li>
+      <li id="ch08">
+        <span class="no">第 8 篇</span>
+        <span>
+          <strong><a href="08-stitch.html">全景拼接流水线（总览）</a></strong>
+          <span class="goal">检测 → 匹配 → RANSAC 估 H → 算画布 → 变换叠图。先跑通两图拼接；再谈多图参照帧与误差累积。</span>
+        </span>
+        <span class="pill">已写</span>
+      </li>
+      <li id="ch09">
+        <span class="no">第 9 篇</span>
+        <span>
+          <strong><a href="09-projection.html">投影模型：平面、柱面、球面</a></strong>
+          <span class="goal">纯平面单应拼广角环拍会撑破。柱面/球面把多图映到统一曲面。同一组图三种投影对照，建立选型直觉。</span>
+        </span>
+        <span class="pill">已写</span>
+      </li>
+      <li id="ch10">
+        <span class="no">第 10 篇</span>
+        <span>
+          <strong><a href="10-blend.html">接缝寻找与图像融合</a></strong>
+          <span class="goal">平均会糊、硬切有缝。羽化、多频段（拉普拉斯金字塔）融合，以及图割/动态规划找低代价接缝。三种结果观感对照。</span>
+        </span>
+        <span class="pill">已写</span>
+      </li>
+      <li id="ch11">
+        <span class="no">第 11 篇</span>
+        <span>
+          <strong><a href="11-exposure.html">曝光补偿、鬼影与常见失败</a></strong>
+          <span class="goal">自动曝光导致亮度跳变；行人/树叶造成鬼影；近景视差让单应性崩掉。曝光补偿基本做法、失败图库、拍摄建议。</span>
+        </span>
+        <span class="pill">已写</span>
+      </li>
+      <li id="ch12">
+        <span class="no">第 12 篇</span>
+        <span>
+          <strong><a href="12-ba.html">Bundle Adjustment：多图一起纠偏</a></strong>
+          <span class="goal">一对一对估 H 会把误差越积越大。BA 的白话：同时微调各相机位姿（与三维点），让重投影误差整体变小。讲清它在全景/多视角里的位置，不要求手推大型稀疏求解器。</span>
+        </span>
+        <span class="pill">已写</span>
+      </li>
+      <li id="ch13">
+        <span class="no">第 13 篇</span>
+        <span>
+          <strong><a href="13-learned.html">深度学习特征：SuperPoint 与 LoFTR</a></strong>
+          <span class="goal">可学习的点检测与描述（SuperPoint），以及弱纹理下的半稠密匹配（LoFTR）。与 ORB/SIFT 对照：速度、重复性、弱纹理、是否需要 GPU。给出「经典优先还是学习优先」的选型表。</span>
+        </span>
+        <span class="pill">已写</span>
+      </li>
+    </ol>
+
+    <h2 id="track-flow">光流重点线（第 14–18 篇）</h2>
+    <p class="lede" style="font-size:1.05rem;margin-top:0">按完全小白来写：先分清光流在回答什么问题，再进入公式与代码。建议五篇连读，中间不要跳。</p>
+    <ol class="route">
+      <li id="ch14">
+        <span class="no">第 14 篇</span>
+        <span>
+          <strong><a href="14-flow-intro.html">光流是什么：亮度守恒与孔径问题</a></strong>
+          <span class="goal">从一个小亮斑在两帧间「挪了几个像素」讲起。定义：光流是图像平面上的二维表观运动场，不等于物体真实 3D 速度。亮度守恒：同一物理点灰度近似不变，由此写出约束方程。孔径问题：只看一条边时，只能确定法向运动，切向不确定——用动画/遮罩交互演示「为什么需要窗口/平滑」。本篇几乎不算算法，只把概念钉牢。</span>
+        </span>
+        <span class="pill">重点 · 待写</span>
+      </li>
+      <li id="ch15">
+        <span class="no">第 15 篇</span>
+        <span>
+          <strong><a href="15-lucas-kanade.html">稀疏光流：Lucas-Kanade</a></strong>
+          <span class="goal">在特征点附近的小窗口里，假设运动是同一个平移 (u, v)。把亮度守恒在窗口内叠成超定方程，用最小二乘（法方程）求解。逐步推导到能看懂 OpenCV <code>calcOpticalFlowPyrLK</code> 在「单层」时做什么。用合成平移图手算/对照数值，再在真实两帧上跑稀疏光流并画箭头。</span>
+        </span>
+        <span class="pill">重点 · 待写</span>
+      </li>
+      <li id="ch16">
+        <span class="no">第 16 篇</span>
+        <span>
+          <strong><a href="16-pyramid-lk.html">金字塔 LK 与特征点跟踪</a></strong>
+          <span class="goal">单层 LK 怕大位移。图像金字塔：先在模糊小图上估大步，再逐层精炼。串成视频里的「点跟踪」：选点 → 跟踪 → 丢点补点。前后向光流检验剔除不可靠轨迹。对照：窗口大小、金字塔层数、迭代次数怎么拧。为第 19 篇防抖提供「稳定跟踪点」原料。</span>
+        </span>
+        <span class="pill">重点 · 待写</span>
+      </li>
+      <li id="ch17">
+        <span class="no">第 17 篇</span>
+        <span>
+          <strong><a href="17-dense-flow.html">稠密光流：从方程到 Farneback</a></strong>
+          <span class="goal">每个像素都要 (u, v)。仅亮度守恒不够，需要额外假设：邻域运动平滑（Horn-Schunck 的能量项直觉，不深陷变分推导）。Farneback：局部用多项式近似灰度曲面，再比两帧系数得运动——用「拟合曲面再对齐」的白话讲清。OpenCV <code>calcOpticalFlowFarneback</code> 参数逐项解释，输出整幅运动场。</span>
+        </span>
+        <span class="pill">重点 · 待写</span>
+      </li>
+      <li id="ch18">
+        <span class="no">第 18 篇</span>
+        <span>
+          <strong><a href="18-flow-eval.html">光流可视化、评估与常见坑</a></strong>
+          <span class="goal">箭头图适合稀疏，色轮（middlebury 风格）适合稠密。若有真值：端点误差 EPE。系统看失败模式：遮挡、光照突变、镜面、重复纹理、运动模糊、过大位移。简要对照现代深度学习光流（如 RAFT 一类）解决了什么、仍要什么数据与算力。收束：稀疏适合跟踪/防抖估变换，稠密适合运动分割与稠密对应。</span>
+        </span>
+        <span class="pill">重点 · 待写</span>
+      </li>
+    </ol>
+
+    <h2 id="track-gyro">防抖 · Rolling Shutter · 陀螺仪（第 19–26 篇）</h2>
+    <ol class="route">
+      <li id="ch19">
+        <span class="no">第 19 篇</span>
+        <span>
+          <strong><a href="19-stabilize-2d.html">二维视频防抖：轨迹平滑</a></strong>
+          <span class="goal">用特征跟踪或光流估帧间相似/仿射变换 → 累积成相机路径 → 低通或滑动窗口平滑 → 用「原路径相对平滑路径的差」做补偿 warp。对比平滑前后路径曲线与成片；讨论过平滑导致的「漂」与视野损失。</span>
+        </span>
+        <span class="pill">已写</span>
+      </li>
+      <li id="ch20">
+        <span class="no">第 20 篇</span>
+        <span>
+          <strong><a href="20-crop-ois.html">裁切、路径优化与 OIS / EIS 总览</a></strong>
+          <span class="goal">补偿后边缘空缺：裁切比例如何定。路径优化直觉：压高频抖动、保留故意运镜（平移/跟拍）。光学防抖 OIS（镜组/传感器位移）与电子防抖 EIS（数字裁切+变换）的分工与局限，为后面陀螺 EIS 铺路。</span>
+        </span>
+        <span class="pill">已写</span>
+      </li>
+      <li id="ch21">
+        <span class="no">第 21 篇</span>
+        <span>
+          <strong><a href="21-rolling-shutter.html">Rolling Shutter：一行一行的时间差</a></strong>
+          <span class="goal">重点篇。全局快门：整幅同一时刻；卷帘快门：逐行（或逐列）依次曝光。手持转动、快速横移时出现：竖线变斜、轮子变成椭圆、整幅「果冻」抖动。建立简单模型：第 y 行的曝光时刻不同，相机在行间继续运动，把同一 3D 点投到错误的像素列。用合成动画演示「只有旋转」和「只有平移」各自长什么样。说明为何手机视频的稳像与光流都会被 RS 污染，以及为何后面要结合陀螺。</span>
+        </span>
+        <span class="pill">重点 · 待写</span>
+      </li>
+      <li id="ch22">
+        <span class="no">第 22 篇</span>
+        <span>
+          <strong><a href="22-gyro-imu.html">陀螺仪与 IMU：角速度如何变成姿态</a></strong>
+          <span class="goal">重点篇。陀螺仪输出三轴角速度（°/s 或 rad/s），不是直接给「朝哪」。积分得到姿态变化；长时间积分必有漂移，加速度计/磁力计如何辅助（互补滤波/简易融合直觉）。IMU 采样常远高于帧率（如 200–1000 Hz vs 30 fps）：必须处理时间戳、时钟域、曝光中心时刻对齐。读一份示例 IMU 日志，画出角速度曲线，并与视频晃动「对得上」。</span>
+        </span>
+        <span class="pill">重点 · 待写</span>
+      </li>
+      <li id="ch23">
+        <span class="no">第 23 篇</span>
+        <span>
+          <strong><a href="23-gyro-eis.html">陀螺仪电子防抖与 RS 校正</a></strong>
+          <span class="goal">重点篇。把姿态序列变成每帧（乃至每一行）的旋转，再反投到像素：用与「平滑目标姿态」的差做 warp，实现陀螺辅助 EIS。对照纯视觉 EIS：低纹理、运动模糊、快速甩动时陀螺更稳；视觉可补漂移与外参。RS 校正：用行时间 + 角速度，按行施加不同旋转，把斜切掰直。讨论外参（陀螺到相机）、延迟标定、以及和光流联合（视觉-惯性）的入口。</span>
+        </span>
+        <span class="pill">重点 · 待写</span>
+      </li>
+      <li id="ch24">
+        <span class="no">第 24 篇</span>
+        <span>
+          <strong><a href="24-stabilize-3d.html">3D 稳像与虚拟相机路径</a></strong>
+          <span class="goal">二维仿射假设在大视差、近景时不够。思路：估计（或近似）场景与相机运动，在 3D 里规划更平滑的虚拟相机路径，再重新投影。对比 2D / 陀螺 EIS / 3D 稳像的能力边界与算力成本。</span>
+        </span>
+        <span class="pill">已写</span>
+      </li>
+      <li id="ch25">
+        <span class="no">第 25 篇</span>
+        <span>
+          <strong><a href="25-video-stitch.html">视频拼接与时空一致性</a></strong>
+          <span class="goal">多路视频不能只复制静态流水线：时间戳同步、帧间变换平滑、接缝位置时序稳定，否则闪烁、「缝在跳舞」。最小可行做法与仍属难点的问题地图（含 RS、曝光不一致）。</span>
+        </span>
+        <span class="pill">已写</span>
+      </li>
+      <li id="ch26">
+        <span class="no">第 26 篇</span>
+        <span>
+          <strong><a href="26-projects.html">端到端实战三则</a></strong>
+          <span class="goal">A：多图全景（柱面 + 融合，可选 BA）。B：手持视频二维视觉防抖（跟踪 + 路径平滑）。C：有 IMU 时做陀螺辅助稳像或 RS 校正演示。参数表、预期效果、报错与自检清单；全套概念收束图。</span>
+        </span>
+        <span class="pill">已写</span>
+      </li>
+    </ol>
+
+    <h2>体例约定（与傅里叶变换系列对齐）</h2>
+    <ul>
+      <li>每篇：现象 → 白话概念 → 图示 / 交互 → 公式（配人话）→ 可运行脚本 → 改参数练习 → 自测。</li>
+      <li>文件：<code>NN-slug.html</code> + <code>code/chNN_*.py</code> + <code>assets/figures/</code> 配图。</li>
+      <li>依赖：以 <code>numpy</code>、<code>matplotlib</code>、<code>opencv-python</code> 为主；标定/BA/深度特征篇按需注明额外包。</li>
+      <li>重点篇（光流、RS、陀螺）：交互示意与失败案例更多，推导拆更碎，默认读者零基础。</li>
+    </ul>
+  </div>
+</body>
+</html>

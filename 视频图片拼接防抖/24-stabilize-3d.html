@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 24 篇 · 3D 稳像与虚拟相机路径</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        拼接与防抖 · 图像视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="23-gyro-eis.html">第 23 篇</a>
+        <a href="24-stabilize-3d.html" aria-current="page">第 24 篇</a>
+        <a href="25-video-stitch.html">第 25 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 24 篇 · 3D 路径 · 约 55 分钟</p>
+    <h1>3D 稳像与虚拟相机路径</h1>
+    <p class="lede">手持视频里，远处大楼和近处栏杆「晃的幅度不一样」。二维仿射只能给整幅图套同一张「纸皮变换」，大视差时就会顾此失彼。本篇换思路：先在三维里估真实相机怎么走，再规划一条更稳的<strong>虚拟相机</strong>路径，最后按深度把像素重新投影过去。</p>
+    <div class="meta">
+      <span class="pill">先读：第 19–20 篇二维稳像直觉；第 23 篇陀螺 EIS</span>
+      <span class="pill">对比：2D / 陀螺 / 3D 能力边界</span>
+      <span class="pill">零公式也能跟完；脚本给数值示意</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#fail">为什么 2D 仿射在大视差不够</a></li>
+        <li><a href="#idea">3D 稳像一句话直觉</a></li>
+        <li><a href="#pipe">四步流水线</a></li>
+        <li><a href="#path">虚拟相机路径怎么「规划」</a></li>
+        <li><a href="#proj">重投影：先回 3D，再投回去</a></li>
+        <li><a href="#bound">和 2D / 陀螺 EIS 的能力边界</a></li>
+        <li><a href="#try">交互：抖、平滑、近景深度</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改这里</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="fail">为什么 2D 仿射在大视差不够</h2>
+    <p>先回忆生活场景：坐在行驶的公交上往窗外看——近处的电线杆飞快往后闪，远处的山几乎不动。相机也一样：相机平移一点点，<strong>近处物体在画面里挪得更多</strong>，远处挪得更少。这种「近大远小的相对位移差」就叫<strong>视差</strong>。</p>
+    <p>第 19–20 篇常见的二维视觉防抖，大致是：</p>
+    <ol>
+      <li>用特征点或光流，估出相邻帧之间一个整体变换（平移 / 相似 / 仿射，偶尔单应）；</li>
+      <li>把变换序列平滑成「目标路径」；</li>
+      <li>用平滑后的变换去 <code>warp</code> 每一帧，再裁掉黑边。</li>
+    </ol>
+    <p>隐含假设是：<strong>画面上大多数像素，共用同一套 2D 变换就够了</strong>。远景、近似平面墙、或抖动以「小旋转」为主时，这个假设经常成立。一旦前景很近、背景很远，并且相机有明显平移，近景和远景需要的补偿量就不一样——一张仿射矩阵无法同时稳住两者。</p>
+    <figure>
+      <img src="assets/figures/ch24_parallax_fail.png" alt="近远景视差导致 2D 补偿失败">
+      <figcaption>图 24-1　左：同一相机抖动下，近景点横向挪动更大。右：若用「远景位移」当整帧平移去补偿，远景残差被压下去，近景仍在晃。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p><strong>白话</strong>：2D 稳像像给整张照片贴一张「会扭的透明纸」，整张纸一起挪。3D 视差问题像桌上有近处杯子和远处窗户——杯子晃的幅度不同，一张纸盖不住。</p>
+    </div>
+    <p>单应性（第 3 篇）比仿射强一点，但仍假设「场景近似一个平面」。近处栏杆 + 远处大楼，不是一个平面，单个 H 同样会撕裂或糊边。</p>
+
+    <h2 id="idea">3D 稳像一句话直觉</h2>
+    <p>不要问「这一帧像素该整体平移多少」，而问：</p>
+    <p class="formula">真实相机走了一条抖抖的路 → 我希望当时站在一条更稳的路上拍 → 按深度把内容「搬」到那条虚拟路上再成像。</p>
+    <p>所以核心物件有三个：</p>
+    <ul>
+      <li><strong>真实相机路径</strong> <code>C(t)</code>：每帧的位置（以及姿态），通常由视觉里程计 / SLAM / IMU+视觉估计；</li>
+      <li><strong>场景结构</strong>：至少要有深度（稠密深度图、分层深度、或稀疏点云），否则无法从像素回到三维；</li>
+      <li><strong>虚拟相机路径</strong> <code>V(t)</code>：你「希望当时相机该怎么走」——通常是 <code>C(t)</code> 的平滑版，并尽量保留故意运镜。</li>
+    </ul>
+    <p>输出视频 = 每一帧内容从 <code>C(t)</code> 看到的样子，重投影成从 <code>V(t)</code> 看的样子。观感上：抖没了，但跟拍、横移这些低频意图还在。</p>
+
+    <h2 id="pipe">四步流水线</h2>
+    <figure>
+      <img src="assets/figures/ch24_pipeline.png" alt="3D 稳像四步流水线">
+      <figcaption>图 24-2　估计路径 → 估计深度/结构 → 规划虚拟路径 → 重投影并裁切。工业实现会更复杂（遮挡、动态物、 croptime），但这四步是骨架。</figcaption>
+    </figure>
+    <p>逐步拆开（仍保持零基础）：</p>
+    <ol>
+      <li><strong>估真实路径</strong>：连续帧之间相机动了多少。可以是纯视觉（特征匹配 + PnP）、视觉惯性（第 23 篇入口）、或离线 SfM。本篇脚本用「手写的抖路径」代替估计，只为讲清后两步。</li>
+      <li><strong>估场景</strong>：谁近谁远。手机上常见：双目/ToF、单目深度网络、或「近/中/远」几层近似。深度越准，重投影越干净。</li>
+      <li><strong>规划虚拟路径</strong>：把高频手抖滤掉，保留你想要的运镜。平滑太狠 → 故意推轨也被抹平，且裁切变大（后面交互可体会）。</li>
+      <li><strong>重投影 + 裁切</strong>：有深度就能从旧像素算出新像素；画面边缘常会空缺，所以要预留裁切余量（和第 20 篇同一类权衡）。</li>
+    </ol>
+
+    <h2 id="path">虚拟相机路径怎么「规划」</h2>
+    <p>最朴素、也最适合入门的做法：对位置（以及姿态角）做<strong>滑动平均</strong>或低通滤波。</p>
+    <p class="formula">V(t) ≈ 平均( C(t−w) … C(t+w) )</p>
+    <p>这里 <code>w</code> 就是「平滑半宽」：窗口越大，路径越黏、越稳，但：</p>
+    <ul>
+      <li>真想快速横摇跟拍时，也会被拖成慢动作；</li>
+      <li><code>|C(t) − V(t)|</code> 变大 → 重投影需要「借用」更大邻域的像素 → 黑边风险上升 → 只好裁得更狠，有效分辨率下降。</li>
+    </ul>
+    <figure>
+      <img src="assets/figures/ch24_virtual_path.png" alt="真实路径与虚拟路径对照">
+      <figcaption>图 24-3　橙：真实相机抖抖的轨迹。青：平滑后的虚拟轨迹。灰虚线：故意运镜的低频意图。右图看 X 随时间：虚拟曲线吃掉毛刺，但仍跟着缓慢右移。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch24_crop_tradeoff.png" alt="平滑强度与裁切余量">
+      <figcaption>图 24-4　平滑半宽越大，真实相机相对虚拟相机的偏离均值越大——这是裁切变大的几何原因（示意）。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>产品级路径优化还会加约束：不要穿墙、不要让关键主体滑出取景、旋转用球面插值、以及「只压高频、保中低频运镜」的能量项。本篇用滑动平均，只为让你看见「虚拟路径」这个旋钮。</p>
+    </div>
+
+    <h2 id="proj">重投影：先回 3D，再投回去</h2>
+    <p>针孔相机极简模型（只抓直觉）：</p>
+    <p class="formula">u = f · (X − c) / Z</p>
+    <p>白话：三维点相对相机的横向偏移，除以深度，再乘焦距，得到像素坐标。深度 <code>Z</code> 越小，同样的相机平移会带来越大的 <code>u</code> 变化——这就是图 24-1 的数学来源。</p>
+    <p>已知某一帧在真实相机下的像素 <code>u</code> 和深度 <code>Z</code>，可以反推三维点，再投到虚拟相机：</p>
+    <p class="formula">X = c + u · Z / f</p>
+    <p class="formula">u′ = f · (X − v) / Z</p>
+    <p>其中 <code>c</code>、<code>v</code> 分别是真实 / 虚拟相机位置。深度对了，近景和远景会各自得到正确的 <code>u′</code>；深度错了，物体会「粘纸」变形或出现裂缝。</p>
+    <figure>
+      <img src="assets/figures/ch24_reproject.png" alt="从真实相机重投影到虚拟相机">
+      <figcaption>图 24-5　同一 3D 点 P：真实相机看到像素 u，虚拟相机应看到 u′。稳像就是按 V(t) 去生成整幅 u′ 图。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch24_numeric.png" alt="2D 与 3D 数值示意对比">
+      <figcaption>图 24-6　左：2D 用远景冻帧，近景残差巨大。右：补偿后轨迹的「毛刺能量」——3D（斜线柱）近远都低；2D 只有远景低。深度已知时，3D 重投影几何误差应≈0。</figcaption>
+    </figure>
+
+    <h2 id="bound">和 2D / 陀螺 EIS 的能力边界</h2>
+    <p>三种常见电子稳像，不要互相替代理解，而是看<strong>各自假设</strong>：</p>
+    <figure>
+      <img src="assets/figures/ch24_capability.png" alt="三种稳像方法能力对照表">
+      <figcaption>图 24-7　输入、擅长、薄弱、成本对照。实际产品常是混合：陀螺管旋转 + 视觉补漂移，近景大视差再上分层/3D。</figcaption>
+    </figure>
+    <ul>
+      <li><strong>2D 视觉 EIS</strong>：便宜、易上线。远景、小抖动、近似平面最好用。近景大平移视差是硬伤；暗光、运动模糊时特征/光流也会飘。</li>
+      <li><strong>陀螺 EIS（第 23 篇）</strong>：旋转测得很勤、很稳，暗光甩动、Rolling Shutter 行旋转校正是强项。但对<strong>纯平移造成的视差</strong>，单靠姿态旋转模型不够——平移要配深度才知道像素该怎么挪。</li>
+      <li><strong>3D 稳像</strong>：理论上能同时稳住近远景，还能主动设计运镜。代价是深度/重建质量、动态物体、算力与延迟；深度一错，伪影往往比「轻微 2D 残抖」更难看。</li>
+    </ul>
+    <div class="callout note">
+      <p><strong>选型口诀</strong>：远景小抖 → 2D；旋转/RS 为主 → 陀螺；近景大视差还要电影感运镜 → 才值得上 3D（或至少「前景一层 + 背景一层」的伪 3D）。</p>
+    </div>
+
+    <h2 id="try">交互：抖、平滑、近景深度</h2>
+    <p>下面画一条「真实相机 X 坐标」和「虚拟相机 X 坐标」，并显示近/远景在 2D 冻帧后的残差对比。拖动滑块，观察三件事：</p>
+    <ul>
+      <li>抖动加大 → 2D 近景残差更炸；</li>
+      <li>平滑半宽加大 → 虚拟曲线更直，但偏离真实路径更大（裁切暗示）；</li>
+      <li>近景深度变小（更近）→ 视差更大，2D 更吃力。</li>
+    </ul>
+    <div class="playground">
+      <label>抖动幅度 <span id="amp-val">0.35</span>
+        <input type="range" id="amp" min="0.05" max="0.80" step="0.05" value="0.35">
+      </label>
+      <label>平滑半宽 <span id="half-val">4</span>
+        <input type="range" id="half" min="0" max="12" step="1" value="4">
+      </label>
+      <label>近景深度（越小越近） <span id="near-val">1.20</span>
+        <input type="range" id="near" min="0.6" max="4.0" step="0.1" value="1.2">
+      </label>
+      <canvas id="path-demo" class="demo tall" width="820" height="420" aria-label="虚拟路径与残差示意"></canvas>
+      <div class="actions">
+        <button type="button" class="primary" id="path-reset">恢复默认</button>
+        <button type="button" id="path-harsh">极端：大抖 + 很近 + 狠平滑</button>
+      </div>
+      <p class="readout" id="path-readout" aria-live="polite"></p>
+    </div>
+
+    <h2 id="run">运行脚本</h2>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <pre class="terminal"><code>source .venv/bin/activate   # 若尚未激活
+MPLCONFIGDIR=/tmp/mpl-cache python code/ch24_stabilize_3d.py</code></pre>
+      <p>会写出 <code>ch24_parallax_fail.png</code>、<code>ch24_pipeline.png</code>、<code>ch24_virtual_path.png</code>、<code>ch24_reproject.png</code>、<code>ch24_capability.png</code>、<code>ch24_numeric.png</code>、<code>ch24_crop_tradeoff.png</code>，以及你的 <code>ch24_my_virtual_path.png</code>、<code>ch24_my_numeric.png</code>。终端应打印「自检通过」。</p>
+    </div>
+
+    <h2 id="edit">改这里</h2>
+    <p>打开 <a href="code/ch24_stabilize_3d.py"><code>code/ch24_stabilize_3d.py</code></a> 顶部：</p>
+    <pre><code># ===== 改这里 =====
+SHAKE_AMP = 0.35
+SMOOTH_HALF = 4
+NEAR_DEPTH = 1.2
+# ==================</code></pre>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>把 <code>NEAR_DEPTH</code> 改成 <code>3.5</code>（近景没那么近），再跑：2D 近景残差应明显变小——说明视差变弱时 2D 又勉强能用。</li>
+        <li>把 <code>SMOOTH_HALF</code> 改成 <code>10</code>：看 <code>ch24_my_virtual_path.png</code> 虚拟曲线更黏，同时回想裁切代价。</li>
+        <li>把 <code>SHAKE_AMP</code> 改成 <code>0.05</code>：几乎不抖时，2D/3D 差别缩小——算法差距要在「难例」上才明显。</li>
+        <li>故意设 <code>SMOOTH_HALF = 0</code>：虚拟路径=真实路径，相当于「不稳像」；脚本自检里也覆盖了这个边界。</li>
+      </ol>
+    </div>
+
+    <h2 id="check">自测</h2>
+    <details class="quiz">
+      <summary>1. 为什么「近处栏杆 + 远处大楼」时，整幅共用一个 2D 仿射容易失败？</summary>
+      <p>相机平移时近远景像移不同（视差）。一张仿射只能表达一种整体挪动，对齐远景就会让近景继续晃（或反过来）。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. 3D 稳像里，「虚拟相机路径」扮演什么角色？</summary>
+      <p>它是你希望当时相机应该走的平滑轨迹。输出视频按这条路径重新成像，从而去掉真实路径上的高频抖动，同时可保留低频运镜。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. 陀螺 EIS 很强，为什么仍不能完全取代 3D 稳像？</summary>
+      <p>陀螺擅长测旋转；纯平移造成的视差需要深度信息才能正确补偿近远景。没有深度，只靠旋转模型无法处理大视差平移。</p>
+    </details>
+    <details class="quiz">
+      <summary>4. 平滑窗口开得很大，稳是稳了，还可能付出什么代价？</summary>
+      <p>故意运镜被抹平；真实相机相对虚拟相机偏离变大，边缘更容易空缺，只好加大裁切，有效画幅变小。</p>
+    </details>
+    <details class="quiz">
+      <summary>5. 重投影时深度估错，最直观会怎样？</summary>
+      <p>像素被放到错误的三维位置再投回去，近景/遮挡边界容易出现变形、裂缝或「粘纸」感，有时比轻微残抖更难看。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>下一篇进入<strong>视频拼接</strong>：多路视频不能只复制静态流水线——时间同步、变换平滑、接缝时序稳定，否则会出现闪烁和「缝在跳舞」。</p>
+    <p><a href="25-video-stitch.html">第 25 篇 · 视频拼接与时空一致性</a>（待写）</p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="23-gyro-eis.html">上一篇</a>
+      <a href="index.html">目录</a>
+      <a href="25-video-stitch.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+      var MUTED = "#5c564c";
+      var INK = "#1c1915";
+      var N = 48;
+      var FAR_Z = 8.0;
+      var F = 2.0;
+
+      var ampEl = document.getElementById("amp");
+      var halfEl = document.getElementById("half");
+      var nearEl = document.getElementById("near");
+      var ampVal = document.getElementById("amp-val");
+      var halfVal = document.getElementById("half-val");
+      var nearVal = document.getElementById("near-val");
+      var readout = document.getElementById("path-readout");
+      var canvas = document.getElementById("path-demo");
+
+      function intendedPath() {
+        var out = [];
+        var i, t;
+        for (i = 0; i < N; i++) {
+          t = i / (N - 1);
+          out.push({ x: 0.15 * t, y: 0.02 * Math.sin(2 * Math.PI * t) });
+        }
+        return out;
+      }
+
+      function shakyPath(intended, amp) {
+        var out = [];
+        var i, t, sx, sy;
+        for (i = 0; i < N; i++) {
+          t = i;
+          sx = amp * (0.55 * Math.sin(0.9 * t) + 0.35 * Math.sin(2.3 * t + 0.4));
+          sy = amp * (0.55 * Math.sin(0.9 * t + 1.2) + 0.35 * Math.sin(2.3 * t - 0.7));
+          out.push({ x: intended[i].x + sx, y: intended[i].y + sy });
+        }
+        return out;
+      }
+
+      function smoothPath(path, half) {
+        half = Math.max(0, half | 0);
+        if (half === 0) return path.map(function (p) { return { x: p.x, y: p.y }; });
+        var out = [];
+        var i, j, sx, sy, c, j0, j1;
+        for (i = 0; i < path.length; i++) {
+          j0 = Math.max(0, i - half);
+          j1 = Math.min(path.length - 1, i + half);
+          sx = 0; sy = 0; c = 0;
+          for (j = j0; j <= j1; j++) {
+            sx += path[j].x;
+            sy += path[j].y;
+            c++;
+          }
+          out.push({ x: sx / c, y: sy / c });
+        }
+        return out;
+      }
+
+      function project(cam, worldX, worldY, depth) {
+        return {
+          u: F * (worldX - cam.x) / depth,
+          v: F * (worldY - cam.y) / depth
+        };
+      }
+
+      function meanAbs(arr) {
+        var s = 0, i;
+        for (i = 0; i < arr.length; i++) s += Math.abs(arr[i]);
+        return s / arr.length;
+      }
+
+      function residual2d(cam, nearZ) {
+        var nearW = { x: 0, y: 0 };
+        var farW = { x: 0.4, y: 0.05 };
+        var far0 = project(cam[0], farW.x, farW.y, FAR_Z);
+        var near0 = project(cam[0], nearW.x, nearW.y, nearZ);
+        var farR = [];
+        var nearR = [];
+        var i, uf, un, dx, dy;
+        for (i = 0; i < cam.length; i++) {
+          uf = project(cam[i], farW.x, farW.y, FAR_Z);
+          un = project(cam[i], nearW.x, nearW.y, nearZ);
+          dx = uf.u - far0.u;
+          dy = uf.v - far0.v;
+          farR.push(Math.hypot((uf.u - dx) - far0.u, (uf.v - dy) - far0.v));
+          nearR.push(Math.hypot((un.u - dx) - near0.u, (un.v - dy) - near0.v));
+        }
+        return { far: farR, near: nearR };
+      }
+
+      function meanOffset(cam, virt) {
+        var s = 0, i;
+        for (i = 0; i < cam.length; i++) {
+          s += Math.hypot(cam[i].x - virt[i].x, cam[i].y - virt[i].y);
+        }
+        return s / cam.length;
+      }
+
+      function surface(c) {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var width = c.clientWidth || 640;
+        var height = c.clientHeight || 420;
+        var pw = Math.round(width * dpr);
+        var ph = Math.round(height * dpr);
+        if (c.width !== pw || c.height !== ph) {
+          c.width = pw;
+          c.height = ph;
+        }
+        var ctx = c.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(0, 0, width, height);
+        return { ctx: ctx, width: width, height: height };
+      }
+
+      function draw() {
+        var amp = parseFloat(ampEl.value);
+        var half = parseInt(halfEl.value, 10);
+        var nearZ = parseFloat(nearEl.value);
+        ampVal.textContent = amp.toFixed(2);
+        halfVal.textContent = String(half);
+        nearVal.textContent = nearZ.toFixed(2);
+
+        var intended = intendedPath();
+        var cam = shakyPath(intended, amp);
+        var virt = smoothPath(cam, half);
+        var res = residual2d(cam, nearZ);
+        var off = meanOffset(cam, virt);
+
+        var s = surface(canvas);
+        var ctx = s.ctx;
+        var W = s.width;
+        var H = s.height;
+
+        // 上半：X 随时间
+        ctx.fillStyle = INK;
+        ctx.font = "13px sans-serif";
+        ctx.fillText("上：真实 X（橙）vs 虚拟 X（青）", 16, 22);
+        var xs = [];
+        var i;
+        for (i = 0; i < N; i++) xs.push(i);
+        var camX = cam.map(function (p) { return p.x; });
+        var virtX = virt.map(function (p) { return p.x; });
+        var intX = intended.map(function (p) { return p.x; });
+        // 统一纵轴范围
+        var allY = camX.concat(virtX, intX);
+        var panel = { x: 40, y: 36, w: W - 56, h: H * 0.38 };
+        var minY = Math.min.apply(null, allY);
+        var maxY = Math.max.apply(null, allY);
+        var pad = 0.1 * (maxY - minY || 1);
+        minY -= pad; maxY += pad;
+
+        function plotLine(arr, color, lw, dash) {
+          ctx.beginPath();
+          for (i = 0; i < arr.length; i++) {
+            var px = panel.x + (i / (N - 1)) * panel.w;
+            var py = panel.y + panel.h - ((arr[i] - minY) / (maxY - minY)) * panel.h;
+            if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+          }
+          ctx.strokeStyle = color;
+          ctx.lineWidth = lw;
+          ctx.setLineDash(dash || []);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+        // 网格
+        ctx.strokeStyle = "#e6dccb";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(panel.x, panel.y, panel.w, panel.h);
+        plotLine(intX, MUTED, 1.2, [5, 4]);
+        plotLine(camX, WAVE, 1.5);
+        plotLine(virtX, TEAL, 2.3);
+
+        // 下半：2D 残差
+        ctx.fillStyle = INK;
+        ctx.fillText("下：2D 远景对齐后的残差（青=远，橙=近）", 16, panel.y + panel.h + 28);
+        var panel2 = { x: 40, y: panel.y + panel.h + 40, w: W - 56, h: H - (panel.y + panel.h + 56) };
+        var maxR = Math.max(
+          0.05,
+          Math.max.apply(null, res.far.concat(res.near))
+        );
+        ctx.strokeStyle = "#e6dccb";
+        ctx.strokeRect(panel2.x, panel2.y, panel2.w, panel2.h);
+        function plotRes(arr, color, lw) {
+          ctx.beginPath();
+          for (i = 0; i < arr.length; i++) {
+            var px = panel2.x + (i / (N - 1)) * panel2.w;
+            var py = panel2.y + panel2.h - (arr[i] / maxR) * panel2.h;
+            if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+          }
+          ctx.strokeStyle = color;
+          ctx.lineWidth = lw;
+          ctx.stroke();
+        }
+        plotRes(res.far, TEAL, 2.0);
+        plotRes(res.near, WAVE, 2.0);
+
+        readout.textContent =
+          "2D 近景残差均值 " + meanAbs(res.near).toFixed(3) +
+          "　｜　2D 远景残差均值 " + meanAbs(res.far).toFixed(3) +
+          "　｜　|C−V| 均值 " + off.toFixed(3) +
+          "（越大暗示裁切需求越高）";
+      }
+
+      ["input", "change"].forEach(function (ev) {
+        ampEl.addEventListener(ev, draw);
+        halfEl.addEventListener(ev, draw);
+        nearEl.addEventListener(ev, draw);
+      });
+      document.getElementById("path-reset").addEventListener("click", function () {
+        ampEl.value = "0.35";
+        halfEl.value = "4";
+        nearEl.value = "1.2";
+        draw();
+      });
+      document.getElementById("path-harsh").addEventListener("click", function () {
+        ampEl.value = "0.75";
+        halfEl.value = "10";
+        nearEl.value = "0.7";
+        draw();
+      });
+      window.addEventListener("resize", draw);
+      draw();
+    })();
+  </script>
+</body>
+</html>

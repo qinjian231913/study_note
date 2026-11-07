@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 6 篇 · 描述子与特征匹配</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        拼接与防抖 · 图像视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="05-features.html">第 5 篇</a>
+        <a href="06-matching.html" aria-current="page">第 6 篇</a>
+        <a href="07-ransac.html">第 7 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 6 篇 · 指纹与配对 · 约 55 分钟</p>
+    <h1>描述子与特征匹配</h1>
+    <p class="lede">第 5 篇找到了「值得认的点」。这一篇给每个点算一串「指纹」（描述子），再到另一张图里找最像的指纹——这就是特征匹配。你会看见暴力匹配有多乱、Lowe 比率怎样净化连线，以及误匹配长什么样。</p>
+    <div class="meta">
+      <span class="pill">先读：第 5 篇（角点与特征点）</span>
+      <span class="pill">下一篇用匹配结果估单应（RANSAC）</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#why">为什么需要「指纹」</a></li>
+        <li><a href="#desc">检测给位置，描述子给指纹</a></li>
+        <li><a href="#orb-sift">ORB 与 SIFT：谁快谁稳</a></li>
+        <li><a href="#bf">暴力匹配 BFMatcher</a></li>
+        <li><a href="#lowe">Lowe 比率检验</a></li>
+        <li><a href="#wrong">误匹配长什么样</a></li>
+        <li><a href="#cross">互检 / 交叉检验</a></li>
+        <li><a href="#try">滑块：看比率如何净化</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改这里</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="why">为什么需要「指纹」</h2>
+    <p>拼接要把图 B 对齐到图 A，你至少要知道：图 B 里的哪些点，对应图 A 里的哪些点。</p>
+    <p>第 5 篇的<strong>检测</strong>只告诉你「这里有个角点」。角点本身只是坐标 <code>(x, y)</code>。两张图各检出几百个点之后，你并不能凭空知道「左图第 17 号点」该连到「右图哪一个」。</p>
+    <p>解决办法：在每个关键点周围看一小块灰度图案，把它压成一串固定长度的数——这串数就是<strong>描述子</strong>（descriptor）。匹配 = 在另一张图里找「指纹最像」的点。</p>
+    <div class="callout note">
+      <p>生活类比：相亲宴上，只报「第 3 桌左边那位」不够；还要记下身高、发型、衣服颜色。下次在人群里找人，靠的是这些特征，不是桌号。</p>
+    </div>
+
+    <h2 id="desc">检测给位置，描述子给指纹</h2>
+    <p>记住流水线的两步，顺序不能反：</p>
+    <ol>
+      <li><strong>检测（detect）</strong>：哪里值得认？→ 关键点列表</li>
+      <li><strong>描述（compute）</strong>：这里长什么样？→ 每个点旁边挂一个向量</li>
+    </ol>
+    <figure>
+      <img src="assets/figures/ch06_detect_vs_desc.png" alt="检测给位置，描述子给指纹的对照图">
+      <figcaption>图 6-1　检测回答「在哪」；描述子回答「像什么」。OpenCV 里常写成 <code>detectAndCompute</code>，一步做完两件事。</figcaption>
+    </figure>
+    <p>描述子要尽量满足：同一物理点在轻微缩放、旋转、亮度变化后，指纹仍然相近；不同物理点的指纹尽量拉开。做不到完美，所以后面一定还有误匹配——第 7 篇的 RANSAC 会继续收拾。</p>
+    <pre><code>orb = cv2.ORB_create(nfeatures=1200)
+kps, desc = orb.detectAndCompute(gray, None)
+# kps[i].pt → (x, y)
+# desc[i]   → 该点的指纹（ORB 是 32 个字节）</code></pre>
+
+    <h2 id="orb-sift">ORB 与 SIFT：谁快谁稳</h2>
+    <p>工业界和教材里最常拿来对比的两套是 <strong>ORB</strong> 与 <strong>SIFT</strong>。本课默认用 ORB 跑通流程；本机若有 SIFT，脚本也会画一张对照图。</p>
+    <figure>
+      <img src="assets/figures/ch06_orb_sift_table.png" alt="ORB 与 SIFT 对照表">
+      <figcaption>图 6-2　先记直觉：ORB 像「快的二进制身份证」；SIFT 像「更细的浮点身份证」。</figcaption>
+    </figure>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>维度</th>
+            <th>ORB</th>
+            <th>SIFT</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>描述子</td>
+            <td>256 比特（32 字节）</td>
+            <td>128 维浮点</td>
+          </tr>
+          <tr>
+            <td>距离</td>
+            <td>汉明距离（比有多少比特不同）</td>
+            <td>欧氏距离 L2</td>
+          </tr>
+          <tr>
+            <td>尺度 / 旋转</td>
+            <td>有金字塔 + 方向，日常够用</td>
+            <td>专门为尺度旋转设计，通常更稳</td>
+          </tr>
+          <tr>
+            <td>速度</td>
+            <td>快，适合实时、手机</td>
+            <td>更慢，精度向场景更常见</td>
+          </tr>
+          <tr>
+            <td>OpenCV</td>
+            <td><code>cv2.ORB_create</code></td>
+            <td><code>cv2.SIFT_create</code>（新版主包常有；旧版在 <code>opencv-contrib</code>）</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="callout note">
+      <p>SIFT 曾因专利在部分发行版里被挪到 contrib。OpenCV 4.4+ / 5.x 的主包 <code>opencv-python</code> 往往已带回 <code>SIFT_create</code>。若你环境报没有，脚本会跳过 SIFT 图并以 ORB 为主——不影响学匹配逻辑。</p>
+    </div>
+    <figure>
+      <img src="assets/figures/ch06_keypoints_orb_sift.png" alt="同一图上 ORB 与 SIFT 关键点">
+      <figcaption>图 6-3　同一张左图：左 ORB、右 SIFT（有则显示）。点多不等于更好；关键是后面匹配是否干净。</figcaption>
+    </figure>
+
+    <h2 id="bf">暴力匹配 BFMatcher</h2>
+    <p><strong>暴力匹配</strong>（Brute-Force）字面意思：对左图每一个描述子，去右图<strong>全部</strong>描述子里算距离，取最近的那个。没有花哨索引，实现简单，点数不太多时完全够用。</p>
+    <pre><code># ORB：汉明距离
+bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+# 每个查询点返回 k 个最近邻（后面比率检验需要 k=2）
+knn = bf.knnMatch(desc1, desc2, k=2)
+
+# SIFT：L2 距离
+bf_sift = cv2.BFMatcher(cv2.NORM_L2, crossCheck=False)</code></pre>
+    <p>若只取「最近邻」一条边、不做过滤，连线图会像毛线团——重复纹理（砖缝、窗格）特别容易认错。</p>
+    <figure>
+      <img src="assets/figures/ch06_bf_vs_ratio.png" alt="暴力匹配全连线与比率过滤对照">
+      <figcaption>图 6-4　上：只连最近邻，交叉很多。下：Lowe 比率 0.75 过滤后，连线大致平行，可读多了。</figcaption>
+    </figure>
+
+    <h2 id="lowe">Lowe 比率检验</h2>
+    <p>David Lowe（SIFT 作者）提出的实用招数：对每个左图点，不只看最近邻，还看<strong>次近邻</strong>。</p>
+    <p class="formula">保留，当且仅当　d<sub>1</sub> &lt; ratio · d<sub>2</sub></p>
+    <p>其中 d<sub>1</sub> 是到最近邻的距离，d<sub>2</sub> 是到次近邻的距离。常用 <code>ratio = 0.7 ~ 0.8</code>；本课默认 <strong>0.75</strong>。</p>
+    <figure>
+      <img src="assets/figures/ch06_lowe_idea.png" alt="Lowe 比率检验白话说明">
+      <figcaption>图 6-5　白话：第一名要大幅领先第二名，才算「认出来了」；俩人差不多像，就弃权。</figcaption>
+    </figure>
+    <p>为什么能压误匹配？</p>
+    <ul>
+      <li><strong>真匹配</strong>：正确点的指纹明显更近，d<sub>1</sub> 远小于其他干扰点的 d<sub>2</sub>。</li>
+      <li><strong>假匹配 / 重复纹理</strong>：好几个砖角长得都像，最近与次近距离差不多 → 比率接近 1 → 被丢掉。</li>
+    </ul>
+    <pre><code>good = []
+for pair in knn:
+    if len(pair) &lt; 2:
+        continue
+    m, n = pair[0], pair[1]   # 最近、次近
+    if m.distance &lt; 0.75 * n.distance:
+        good.append(m)</code></pre>
+    <div class="callout note">
+      <p>比率越<strong>小</strong>越严：留下的更少、更干净，但也可能误杀真匹配。越<strong>大</strong>越松：线更多，垃圾也更多。下面滑块可以亲自感受。</p>
+    </div>
+
+    <h2 id="wrong">误匹配长什么样</h2>
+    <p>净化之前，先学会<strong>用眼睛认外点</strong>。好匹配的连线大致平行、方向一致（两图只是平移+微旋转时尤其明显）。误匹配则交叉乱飞：左图窗户连到右图招牌、砖缝连到门把手……</p>
+    <figure>
+      <img src="assets/figures/ch06_mismatches.png" alt="比率接近1的误匹配连线样例">
+      <figcaption>图 6-6　专门挑出「最近 ≈ 次近」（比率接近 1）的连线。橙色乱麻 = 典型误匹配长相。后面估几何时，这些就是外点。</figcaption>
+    </figure>
+    <p>脚本里把左右图横拼再画线，等价于 OpenCV 的 <code>drawMatches</code> 思路。读图时先看整体趋势，再盯个别离谱线段。</p>
+
+    <h2 id="cross">互检 / 交叉检验</h2>
+    <p>另一条常用净化规则叫<strong>互检</strong>（cross-check / 交叉检验）：</p>
+    <ul>
+      <li>从 A 找 B 的最近邻，得到点 b；</li>
+      <li>再从 B 找 A 的最近邻，得到点 a′；</li>
+      <li>只有 a → b 且 b → a（互相都认对方）才保留。</li>
+    </ul>
+    <p>OpenCV 里打开 <code>crossCheck=True</code> 时，<code>match</code>（不是 knnMatch）会直接做这件事：</p>
+    <pre><code>bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+matches = bf.match(desc1, desc2)</code></pre>
+    <figure>
+      <img src="assets/figures/ch06_cross_check.png" alt="比率过滤与互检结果对照">
+      <figcaption>图 6-7　上：仅 Lowe 比率。下：仅互检。两者都能压误匹配，但机制不同；实务中也有人先比率再互检，或交给第 7 篇 RANSAC。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>注意：<code>crossCheck=True</code> 时通常配合 <code>match</code>；若你还想做比率检验，需要 <code>crossCheck=False</code> + <code>knnMatch(..., k=2)</code>。本课「改这里」里用开关二选一演示，避免搅在一起。</p>
+    </div>
+    <p>若环境有 SIFT，脚本还会多画一张 SIFT + L2 + 比率的结果，方便你和 ORB 对照：</p>
+    <figure>
+      <img src="assets/figures/ch06_sift_matches.png" alt="SIFT 匹配连线结果">
+      <figcaption>图 6-8　SIFT 匹配示例（本机有 <code>SIFT_create</code> 时生成）。没有 SIFT 时此图可能缺失，以 ORB 图为准即可。</figcaption>
+    </figure>
+
+    <h2 id="try">滑块：看比率如何净化</h2>
+    <p>下面用脚本导出的真实 ORB 匹配（含 d<sub>1</sub>、d<sub>2</sub>）。拖动比率阈值：越小越严，青色保留线越少；调到 1.0 接近「不过滤」。橙色虚线是当前被扔掉的匹配。</p>
+    <div class="playground">
+      <canvas id="ratio-demo" class="demo tall" width="820" height="340" aria-label="比率阈值过滤匹配连线"></canvas>
+      <div class="controls">
+        <label for="ratio">比率阈值</label>
+        <input id="ratio" type="range" min="0.40" max="1.00" step="0.01" value="0.75">
+        <output id="ratio-out" for="ratio">0.75</output>
+      </div>
+      <div class="actions">
+        <button type="button" class="primary" id="ratio-tight">更严 0.60</button>
+        <button type="button" id="ratio-default">常用 0.75</button>
+        <button type="button" id="ratio-loose">更松 0.90</button>
+        <button type="button" id="ratio-off">几乎不过滤 1.00</button>
+      </div>
+      <p class="readout" id="ratio-readout" aria-live="polite"></p>
+    </div>
+
+    <h2 id="run">运行脚本</h2>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <pre class="terminal"><code>source .venv/bin/activate   # 若尚未激活
+MPLCONFIGDIR=/tmp/mpl-cache python code/ch06_matching.py</code></pre>
+      <p>会写出 <code>ch06_detect_vs_desc.png</code>、<code>ch06_bf_vs_ratio.png</code>、<code>ch06_mismatches.png</code>、<code>ch06_cross_check.png</code> 等，以及你的 <code>ch06_my_matches.png</code>。末尾打印「自检通过」。</p>
+    </div>
+
+    <h2 id="edit">改这里</h2>
+    <p>打开 <a href="code/ch06_matching.py"><code>code/ch06_matching.py</code></a>，只改顶部参数区：</p>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>把 <code>MY_RATIO</code> 从 <code>0.75</code> 改成 <code>0.55</code>，再跑脚本：留下的线应更少、更干净；再改成 <code>0.95</code>，线变多、交叉回来。</li>
+        <li>把 <code>MY_MAX_DRAW</code> 改成 <code>20</code>，观察「只画最好的一小撮」时图是否更好读。</li>
+        <li>把 <code>MY_CROSS_CHECK = True</code>，此时脚本走互检分支（不再用比率）。对比 <code>ch06_my_matches.png</code> 与课文里的交叉检验图。</li>
+        <li>把 <code>MY_NFEATURES</code> 改成 <code>200</code> 与 <code>2000</code>：点太少匹配稀疏；点太多计算变慢、重复纹理干扰也更多。</li>
+      </ol>
+    </div>
+    <figure>
+      <img src="assets/figures/ch06_my_matches.png" alt="改参数后生成的我的匹配图">
+      <figcaption>图 6-9　<code>ch06_my_matches.png</code>：专给你调参。改完务必重新运行脚本才会更新。</figcaption>
+    </figure>
+
+    <h2 id="check">自测</h2>
+    <details class="quiz">
+      <summary>1. 特征检测和描述子，各回答什么问题？</summary>
+      <p>检测回答「哪里值得认」（给出位置）；描述子回答「这里长什么样」（给出指纹向量）。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. ORB 常用什么距离？SIFT 常用什么距离？</summary>
+      <p>ORB 用汉明距离（二进制比特比不同）；SIFT 用欧氏距离（L2）。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. Lowe 比率检验为什么能压误匹配？</summary>
+      <p>要求最近邻明显优于次近邻。真匹配通常 d₁≪d₂；重复纹理时多个候选差不多像，d₁≈d₂，会被丢掉。</p>
+    </details>
+    <details class="quiz">
+      <summary>4. 互检（交叉检验）在检查什么？</summary>
+      <p>A→B 的最近邻与 B→A 的最近邻必须互指对方，单向「单相思」式最近邻会被剔除。</p>
+    </details>
+    <details class="quiz">
+      <summary>5. 比率阈值从 0.9 改到 0.5，匹配数量通常怎样变？</summary>
+      <p>通常变少（更严）。可能更干净，也可能误杀一部分真匹配。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>匹配再干净也会剩外点。下一篇用 <strong>RANSAC</strong>：随机抽几对点估单应，数有多少内点同意，留下最好的模型——接到 <code>findHomography</code>。</p>
+    <p><a href="07-ransac.html">第 7 篇 · RANSAC 与鲁棒估计单应性</a>（待写）</p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="05-features.html">上一篇</a>
+      <a href="index.html">目录</a>
+      <a href="07-ransac.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script src="assets/figures/ch06_match_data.js"></script>
+  <script>
+    (function () {
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+      var MUTED = "#5c564c";
+      var canvas = document.getElementById("ratio-demo");
+      var slider = document.getElementById("ratio");
+      var out = document.getElementById("ratio-out");
+      var readout = document.getElementById("ratio-readout");
+      if (!canvas || typeof MATCH_DATA === "undefined") {
+        if (readout) readout.textContent = "匹配数据未加载。请确认 assets/figures/ch06_match_data.js 存在。";
+        return;
+      }
+
+      var data = MATCH_DATA;
+      var imgL = new Image();
+      var imgR = new Image();
+      var ready = 0;
+
+      function tryDraw() {
+        if (ready < 2) return;
+        draw();
+      }
+
+      imgL.onload = function () { ready++; tryDraw(); };
+      imgR.onload = function () { ready++; tryDraw(); };
+      imgL.src = "assets/images/ch06_pair_left.png";
+      imgR.src = "assets/images/ch06_pair_right.png";
+
+      function surface() {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var width = canvas.clientWidth || 640;
+        var height = canvas.clientHeight || 340;
+        var pw = Math.round(width * dpr);
+        var ph = Math.round(height * dpr);
+        if (canvas.width !== pw || canvas.height !== ph) {
+          canvas.width = pw;
+          canvas.height = ph;
+        }
+        var ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(0, 0, width, height);
+        return { ctx: ctx, width: width, height: height };
+      }
+
+      function draw() {
+        var s = surface();
+        var ctx = s.ctx;
+        var pad = 8;
+        var gap = 10;
+        var availW = s.width - pad * 2 - gap;
+        var scale = availW / (data.w1 + data.w2);
+        var h = data.h1 * scale;
+        var y0 = Math.max(8, (s.height - h) / 2);
+        var xL = pad;
+        var xR = pad + data.w1 * scale + gap;
+
+        ctx.drawImage(imgL, xL, y0, data.w1 * scale, h);
+        ctx.drawImage(imgR, xR, y0, data.w2 * scale, h);
+
+        ctx.strokeStyle = "#d8cfc0";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(xL, y0, data.w1 * scale, h);
+        ctx.strokeRect(xR, y0, data.w2 * scale, h);
+
+        var ratio = parseFloat(slider.value);
+        var kept = 0;
+        var dropped = 0;
+
+        data.matches.forEach(function (m) {
+          var r = m.d1 / Math.max(m.d2, 1e-6);
+          var ok = r < ratio;
+          var x1 = xL + m.x1 * scale;
+          var y1 = y0 + m.y1 * scale;
+          var x2 = xR + m.x2 * scale;
+          var y2 = y0 + m.y2 * scale;
+          ctx.beginPath();
+          ctx.moveTo(x1, y1);
+          ctx.lineTo(x2, y2);
+          if (ok) {
+            ctx.strokeStyle = TEAL;
+            ctx.lineWidth = 1.4;
+            ctx.setLineDash([]);
+            kept++;
+          } else {
+            ctx.strokeStyle = "rgba(194,77,40,0.35)";
+            ctx.lineWidth = 1;
+            ctx.setLineDash([4, 4]);
+            dropped++;
+          }
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = ok ? TEAL : WAVE;
+          ctx.beginPath();
+          ctx.arc(x1, y1, ok ? 2.4 : 2, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.beginPath();
+          ctx.arc(x2, y2, ok ? 2.4 : 2, 0, Math.PI * 2);
+          ctx.fill();
+        });
+
+        out.textContent = ratio.toFixed(2);
+        readout.textContent =
+          "阈值 " + ratio.toFixed(2) +
+          "：保留 " + kept + " 条（青实线），丢弃 " + dropped +
+          " 条（橙虚线）。条件：d1 < " + ratio.toFixed(2) + " × d2。";
+      }
+
+      slider.addEventListener("input", draw);
+      window.addEventListener("resize", draw);
+
+      function setRatio(v) {
+        slider.value = String(v);
+        draw();
+      }
+      document.getElementById("ratio-tight").addEventListener("click", function () { setRatio(0.6); });
+      document.getElementById("ratio-default").addEventListener("click", function () { setRatio(0.75); });
+      document.getElementById("ratio-loose").addEventListener("click", function () { setRatio(0.9); });
+      document.getElementById("ratio-off").addEventListener("click", function () { setRatio(1.0); });
+    })();
+  </script>
+</body>
+</html>

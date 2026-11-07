@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 3 篇 · 单应性：两平面之间的通行证</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        拼接与防抖 · 图像视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="02-affine.html">第 2 篇</a>
+        <a href="03-homography.html" aria-current="page">第 3 篇</a>
+        <a href="04-camera.html">第 4 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 3 篇 · 配准核心 · 约 50 分钟</p>
+    <h1>单应性：两平面之间的通行证</h1>
+    <p class="lede">第 2 篇末尾那个 3×3 透视矩阵，今天正式起名：单应性 Homography，记作 H。一张合格的 H，能把图 B 里的平面「翻译」到图 A 的坐标系。你会亲手估 H、扩画布、叠图，也会亲眼看到近景大视差时它怎样翻车。</p>
+    <div class="meta">
+      <span class="pill">先读：第 2 篇</span>
+      <span class="pill">后面特征匹配、RANSAC、拼接都靠 H</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#name">给透视矩阵正式起名</a></li>
+        <li><a href="#when">何时一张 H 够用</a></li>
+        <li><a href="#estimate">用对应点估 H</a></li>
+        <li><a href="#warp">warp 到 A 坐标系与画布大小</a></li>
+        <li><a href="#overlay">叠图看对齐</a></li>
+        <li><a href="#fail">大视差为何失效</a></li>
+        <li><a href="#try">拖点看 H warp</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改这里练习</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="name">给透视矩阵正式起名</h2>
+    <p>先回想一个生活场景：你手里有两张同一面墙的照片。墙是平的。你在第一张照片上指一个螺丝钉，第二张照片上同一个螺丝钉在另一个像素位置。若整面墙都服从同一种「对应规则」，这条规则就可以写成一个 3×3 矩阵——这就是<strong>单应性</strong>。</p>
+    <p>第 2 篇已经写过：点先抬成齐次坐标 <code>(x, y, 1)</code>，乘上 H，再把第三维除掉，得到新像素坐标。那时我们叫它「透视 / 射影变换」。在拼接、标定、文档矫正的文献和 OpenCV 文档里，它几乎总被叫做：</p>
+    <p class="formula">Homography　单应性　矩阵记作 H</p>
+    <figure>
+      <img src="assets/figures/ch03_naming.png" alt="透视矩阵正式命名为单应性">
+      <figcaption>图 3-1　名字变了，东西没变：还是那个 8 自由度的 3×3 矩阵。</figcaption>
+    </figure>
+    <p>白话口诀：</p>
+    <ul>
+      <li><strong>H 是通行证</strong>：准许「平面 A 上的点」合法地变成「平面 B 上的点」（或反过来）。</li>
+      <li><strong>H 不是随便两张图都能办</strong>：场景要近似一个平面，或相机运动很特殊（下面细说）。</li>
+      <li><strong>H 与 λH 是同一本护照</strong>（λ≠0）：整体乘常数，投影结果不变，所以实质 8 自由度。</li>
+    </ul>
+    <div class="callout note">
+      <p>公式写法：<code>(x′, y′, 1)<sup>T</sup> ∼ H · (x, y, 1)<sup>T</sup></code>。波浪号 ∼ 表示「差一个整体比例」。算完若第三维是 w，就用 <code>X = x<sub>h</sub>/w</code>、<code>Y = y<sub>h</sub>/w</code> 回到像素。</p>
+    </div>
+
+    <h2 id="when">何时一张 H 够用</h2>
+    <p>一张 H 能描述「整幅图」的对应，前提是：你关心的那些三维点，看起来像躺在<strong>同一个平面</strong>上（或数学上等价于这种情况）。常见三类：</p>
+    <figure>
+      <img src="assets/figures/ch03_when_ok.png" alt="单应性适用的三种场景">
+      <figcaption>图 3-2　三种「通行证有效」的日常情况。</figcaption>
+    </figure>
+    <ol>
+      <li><strong>真正的平面</strong>：墙、海报、白板、桌面、地面（近似平）。拍两张，对应点由一张 H 联系。</li>
+      <li><strong>远景近似平面</strong>：远处山峦、城市天际线。物体很远时，深度差相对「相机到场景的距离」很小，视差很弱，一张 H 常常够用。</li>
+      <li><strong>相机几乎纯旋转</strong>：人站着转头环拍，脚不怎么挪。可以证明：所有视线方向的变化，等价于把点映到「无穷远平面」上的一张 H。这就是很多手机全景、防抖里爱用单应的原因之一。</li>
+    </ol>
+    <p>反过来，若你<strong>一边平移一边拍近处立体物体</strong>（桌边的杯子、走廊里的行人），不同深度的点在画面上「滑动」的速度不一样——一张 H 只能选一种滑动方式，必然顾此失彼。那是本篇后半的失败案例。</p>
+
+    <h2 id="estimate">用对应点估 H</h2>
+    <p>H 有 8 个自由度，一对对应点提供两个方程（x′ 与 y′），所以<strong>至少 4 对</strong>不共线、不退化的对应点。OpenCV 给你两条路：</p>
+    <figure>
+      <img src="assets/figures/ch03_api.png" alt="getPerspectiveTransform 与 findHomography API">
+      <figcaption>图 3-3　本篇两件套：估 H + warp。</figcaption>
+    </figure>
+    <pre><code># 正好 4 对点：解析求解（点必须准）
+H = cv2.getPerspectiveTransform(src_pts, dst_pts)  # 都是 4×2 float32
+
+# 多于 4 对：可配合 RANSAC 剔错配（第 7 篇展开）
+H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, ransacReprojThreshold=3.0)</code></pre>
+    <p>约定很重要：<code>src</code> 是<strong>图 B 上的点</strong>，<code>dst</code> 是<strong>图 A 上的对应点</strong>。估出来的 H 满足「B 的点 → A 的点」。后面 <code>warpPerspective(img_b, H, …)</code> 才能把 B 画进 A 的坐标系。</p>
+    <figure>
+      <img src="assets/figures/ch03_correspondences.png" alt="图B与图A上的四对对应点">
+      <figcaption>图 3-4　同色同字母是一对点。四对钉死后，H 就定了（理想无噪声时）。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch03_h_matrix.png" alt="估出的 3×3 单应矩阵">
+      <figcaption>图 3-5　本例 <code>getPerspectiveTransform</code> 得到的 H。第三行若明显不是 [0,0,1]，说明含透视成分。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>点的顺序必须一一对应：都按「左上→右上→右下→左下」，或你自己约定的同一绕行方向。顺序乱了，H 会「拧巴」，warp 出飞掉的结果。</p>
+    </div>
+
+    <h2 id="warp">warp 到 A 坐标系与画布大小</h2>
+    <p>估好 H 之后，核心一句：</p>
+    <pre><code>out = cv2.warpPerspective(img_b, H, (width, height))</code></pre>
+    <p>它的意思是：遍历输出画布上每个像素，用 <strong>H 的逆</strong> 回到图 B 取样（反向映射，避免窟窿）。你只需记住效果：<strong>图 B 被「印」到以图 A 为参考的坐标系里</strong>。</p>
+    <p>坑在第三参数 <code>(width, height)</code>。若直接用图 A 的宽高，图 B 里伸出 A 边界的部分会被<strong>裁掉</strong>——拼接时常见「右边缺一块」。正确做法：</p>
+    <ol>
+      <li>把图 B 的四个角用 H 变到 A 坐标系；</li>
+      <li>与图 A 的四个角一起，算轴对齐包围盒；</li>
+      <li>若最小坐标是负数，构造一个平移矩阵 T，让所有点落到正象限；</li>
+      <li>用 <code>H_adj = T @ H</code> 去 warp，画布尺寸取包围盒大小。</li>
+    </ol>
+    <figure>
+      <img src="assets/figures/ch03_canvas_steps.png" alt="计算画布大小的三步">
+      <figcaption>图 3-6　扩画布三步。脚本里的 <code>canvas_from_corners</code> 就是这件事。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch03_canvas_size.png" alt="裁切与扩画布对比">
+      <figcaption>图 3-7　左：画布锁死为图 A，B 被砍边。右：按四角包络扩画布，两边内容都在。</figcaption>
+    </figure>
+
+    <h2 id="overlay">叠图看对齐</h2>
+    <p>对齐好不好，最直观的办法是<strong>半透明叠在一起</strong>：墙缝、棋盘格、文字如果「重影」很小，说明 H 找对了；若明显双影，要么点标错了，要么场景根本不该用一张 H。</p>
+    <figure>
+      <img src="assets/figures/ch03_warp_overlay.png" alt="warp 后半透明叠图">
+      <figcaption>图 3-8　左：参考图 A。中：warp 后的 B。右：半透明叠加。平面海报场景下，格子应对齐。</figcaption>
+    </figure>
+    <p>伪代码（与课文脚本一致）：</p>
+    <pre><code>H = cv2.getPerspectiveTransform(pts_b, pts_a)
+blend, warped_b, ... = overlay_images(img_a, img_b, H, alpha=0.45)
+# 内部：算画布 → H_adj = T @ H → warp 两图 → 按 mask 混合</code></pre>
+
+    <h2 id="fail">大视差为何失效</h2>
+    <p>想象你朝左侧平移一步再拍照。近处的电线杆在画面上会<strong>滑过很大一截</strong>；远处的山几乎不动。这种「近大远小的位移差」叫<strong>视差</strong>（parallax）。</p>
+    <p>一张 H 只能规定一种全局滑动方式。你若用远墙的点估 H，墙会对齐，近柱必然错位、出现重影；你若硬用近柱的点，墙又会裂开。这不是调参能救的——是模型假设破了。</p>
+    <figure>
+      <img src="assets/figures/ch03_parallax_idea.png" alt="视差白话示意">
+      <figcaption>图 3-9　同样侧移相机：近柱位移大，远墙位移小。H 没法同时伺候两者。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch03_parallax_fail.png" alt="近景视差导致单应失败">
+      <figcaption>图 3-10　用远墙四点估 H 后叠图：远墙尚可，近柱明显重影（橙框）。真实拼接里这叫「近景炸了」。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>以后遇到重影，先问：是曝光不一致，还是几何模型不够？本篇这种「近柱远墙」是几何失败。曝光问题在更后面的篇章处理。大视差场景往往需要更复杂的方法（多平面、网格变形、深度等），不是再估一张全局 H 就能搞定。</p>
+    </div>
+
+    <h2 id="try">拖点看 H warp</h2>
+    <p>左侧是图 B 的源四边形（可拖橙青四角），右侧实时用 H 把棋盘「印」到目标位置。你也可以拖右侧目标四角，或动滑块改透明度，观察叠在底图 A 上的效果。</p>
+    <div class="playground">
+      <canvas id="h-demo" class="demo tall" width="860" height="400" aria-label="拖点观察单应 warp"></canvas>
+      <div class="actions">
+        <label>叠图透明度 <input type="range" id="h-alpha" min="0" max="100" value="45"> <span id="h-alpha-val">0.45</span></label>
+        <button type="button" class="primary" id="h-reset">恢复示例</button>
+        <button type="button" id="h-planar">平面对齐预设</button>
+        <button type="button" id="h-twist">故意拧巴</button>
+      </div>
+      <p class="readout" id="h-readout" aria-live="polite"></p>
+      <pre id="h-matrix" class="terminal" style="margin-top:0.75rem"></pre>
+    </div>
+
+    <h2 id="run">运行脚本</h2>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <pre class="terminal"><code>source .venv/bin/activate   # 若尚未激活
+python code/ch03_homography.py</code></pre>
+      <p>会写出 <code>ch03_naming.png</code>、<code>ch03_when_ok.png</code>、<code>ch03_warp_overlay.png</code>、<code>ch03_parallax_fail.png</code> 等，以及你的 <code>ch03_my_overlay.png</code>。原图在 <code>assets/images/ch03_*.png</code>。</p>
+    </div>
+
+    <h2 id="edit">改这里练习</h2>
+    <p>打开 <a href="code/ch03_homography.py"><code>code/ch03_homography.py</code></a>，改顶部三个旋钮：</p>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>改 <code>MY_DST_QUAD</code>：把图 B 整幅映到更靠右 / 更倾斜的位置，看 <code>ch03_my_overlay.png</code> 里棋盘如何落在 A 上。</li>
+        <li>把 <code>MY_ALPHA</code> 在 0.2～0.7 之间切换，体会叠图时「看清对齐」与「看清底图」的折中。</li>
+        <li>故意把 <code>MY_DST_QUAD</code> 四个点几乎共线或扭成自交——运行后叠图会很难看。对照交互区的「故意拧巴」按钮，建立「对应点质量决定 H」的直觉。</li>
+        <li>选做：在脚本里把 <code>getPerspectiveTransform</code> 换成 <code>findHomography</code>，多加一对噪声点，观察 H 是否仍稳定（更多讨论见第 7 篇）。</li>
+      </ol>
+    </div>
+
+    <h2 id="check">自测</h2>
+    <details class="quiz">
+      <summary>1. 第 2 篇的「透视矩阵」和第 3 篇的「单应性 H」是什么关系？</summary>
+      <p>本质上是同一个 3×3、8 自由度的射影变换；本篇只是正式命名，并强调它在「两平面对应」里的用法。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. 举出至少两种「一张 H 够用」的情况。</summary>
+      <p>例如：拍摄真实平面（墙/海报）；远景近似平面；相机近似纯旋转（脚不动只转头）。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. <code>getPerspectiveTransform</code> 和 <code>findHomography</code> 怎么选？</summary>
+      <p>正好 4 对、点很准 → 前者。点更多或可能有误匹配 → 后者（常配 RANSAC）。</p>
+    </details>
+    <details class="quiz">
+      <summary>4. 为什么 warp 时经常要先算画布大小，而不是直接用图 A 的宽高？</summary>
+      <p>图 B 经 H 变换后可能伸出图 A 边界；锁死 A 的尺寸会裁掉内容。应按两图四角的包围盒扩画布，必要时加平移 T。</p>
+    </details>
+    <details class="quiz">
+      <summary>5. 近景立柱 + 远墙，用一张全局 H 叠图，典型失败长什么样？为什么？</summary>
+      <p>常见是墙大致对齐、近柱重影（或反过来）。因为视差使不同深度的点位移不同，一张 H 只能拟合一种全局对应。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>有了 H，还缺「相机自己的内参」：焦距、主点、畸变。下一篇进入针孔相机与标定直觉，为后面把像素对应连回三维做准备。</p>
+    <p><a href="04-camera.html">第 4 篇 · 针孔相机与内参直觉</a>（待写）</p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="02-affine.html">上一篇</a>
+      <a href="index.html">目录</a>
+      <a href="04-camera.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+      var MUTED = "#5c564c";
+      var INK = "#1c1915";
+
+      // 左：源四边形（图 B）；右：目标四边形（图 A 系）
+      var src = [
+        { x: 40, y: 50 },
+        { x: 220, y: 40 },
+        { x: 230, y: 200 },
+        { x: 30, y: 210 }
+      ];
+      var dst = [
+        { x: 320, y: 60 },
+        { x: 520, y: 45 },
+        { x: 540, y: 230 },
+        { x: 300, y: 240 }
+      ];
+      var drag = null; // { which: 'src'|'dst', i: number }
+      var alpha = 0.45;
+
+      function surface(canvas) {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var width = canvas.clientWidth || 640;
+        var height = canvas.clientHeight || 400;
+        var pw = Math.round(width * dpr);
+        var ph = Math.round(height * dpr);
+        if (canvas.width !== pw || canvas.height !== ph) {
+          canvas.width = pw;
+          canvas.height = ph;
+        }
+        var ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(0, 0, width, height);
+        return { ctx: ctx, width: width, height: height };
+      }
+
+      function cross(a, b, c) {
+        return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+      }
+
+      function isConvex(p) {
+        var signs = [];
+        var i;
+        for (i = 0; i < 4; i++) {
+          signs.push(cross(p[i], p[(i + 1) % 4], p[(i + 2) % 4]));
+        }
+        var pos = signs.some(function (v) { return v > 1e-6; });
+        var neg = signs.some(function (v) { return v < -1e-6; });
+        return !(pos && neg);
+      }
+
+      function solve8(M, b) {
+        var n = 8;
+        var a = M.map(function (row, i) { return row.concat([b[i]]); });
+        var i, j, k;
+        for (i = 0; i < n; i++) {
+          var piv = i;
+          for (k = i + 1; k < n; k++) {
+            if (Math.abs(a[k][i]) > Math.abs(a[piv][i])) piv = k;
+          }
+          if (Math.abs(a[piv][i]) < 1e-10) return null;
+          var tmp = a[i];
+          a[i] = a[piv];
+          a[piv] = tmp;
+          var div = a[i][i];
+          for (j = i; j <= n; j++) a[i][j] /= div;
+          for (k = 0; k < n; k++) {
+            if (k === i) continue;
+            var f = a[k][i];
+            for (j = i; j <= n; j++) a[k][j] -= f * a[i][j];
+          }
+        }
+        return a.map(function (row) { return row[n]; });
+      }
+
+      function homography(srcPts, dstPts) {
+        var M = [];
+        var b = [];
+        var i;
+        for (i = 0; i < 4; i++) {
+          var u = srcPts[i].x;
+          var v = srcPts[i].y;
+          var x = dstPts[i].x;
+          var y = dstPts[i].y;
+          M.push([-u, -v, -1, 0, 0, 0, u * x, v * x]);
+          b.push(-x);
+          M.push([0, 0, 0, -u, -v, -1, u * y, v * y]);
+          b.push(-y);
+        }
+        var h8 = solve8(M, b);
+        if (!h8) return null;
+        return [
+          [h8[0], h8[1], h8[2]],
+          [h8[3], h8[4], h8[5]],
+          [h8[6], h8[7], 1]
+        ];
+      }
+
+      function applyH(H, x, y) {
+        var X = H[0][0] * x + H[0][1] * y + H[0][2];
+        var Y = H[1][0] * x + H[1][1] * y + H[1][2];
+        var W = H[2][0] * x + H[2][1] * y + H[2][2];
+        if (Math.abs(W) < 1e-9) return null;
+        return { x: X / W, y: Y / W };
+      }
+
+      function drawQuad(ctx, pts, stroke) {
+        ctx.beginPath();
+        ctx.moveTo(pts[0].x, pts[0].y);
+        pts.slice(1).forEach(function (p) { ctx.lineTo(p.x, p.y); });
+        ctx.closePath();
+        ctx.strokeStyle = stroke;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+
+      function drawHandles(ctx, pts) {
+        pts.forEach(function (p, i) {
+          ctx.fillStyle = i % 2 === 0 ? WAVE : TEAL;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 7, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = MUTED;
+          ctx.font = "12px Microsoft YaHei, sans-serif";
+          ctx.fillText("ABCD"[i], p.x + 9, p.y - 9);
+        });
+      }
+
+      function drawCheckerInQuad(ctx, H, srcPts) {
+        // 在源四边形参数网格上取样，推到目标
+        var gu, gv, t, s;
+        for (gu = 0; gu <= 8; gu++) {
+          ctx.beginPath();
+          for (gv = 0; gv <= 48; gv++) {
+            t = gu / 8;
+            s = gv / 48;
+            // 双线性：用源四边形参数化，再经 H（H 已是 src→dst，直接用角点参数更稳）
+            var sx =
+              (1 - s) * ((1 - t) * srcPts[0].x + t * srcPts[1].x) +
+              s * ((1 - t) * srcPts[3].x + t * srcPts[2].x);
+            var sy =
+              (1 - s) * ((1 - t) * srcPts[0].y + t * srcPts[1].y) +
+              s * ((1 - t) * srcPts[3].y + t * srcPts[2].y);
+            var p = applyH(H, sx, sy);
+            if (!p) continue;
+            if (gv === 0) ctx.moveTo(p.x, p.y);
+            else ctx.lineTo(p.x, p.y);
+          }
+          ctx.strokeStyle = gu === 0 || gu === 8 ? WAVE : "#d7cbb8";
+          ctx.lineWidth = gu === 0 || gu === 8 ? 1.8 : 1;
+          ctx.stroke();
+        }
+        for (gv = 0; gv <= 8; gv++) {
+          ctx.beginPath();
+          for (gu = 0; gu <= 48; gu++) {
+            t = gu / 48;
+            s = gv / 8;
+            var ux =
+              (1 - s) * ((1 - t) * srcPts[0].x + t * srcPts[1].x) +
+              s * ((1 - t) * srcPts[3].x + t * srcPts[2].x);
+            var uy =
+              (1 - s) * ((1 - t) * srcPts[0].y + t * srcPts[1].y) +
+              s * ((1 - t) * srcPts[3].y + t * srcPts[2].y);
+            var q = applyH(H, ux, uy);
+            if (!q) continue;
+            if (gu === 0) ctx.moveTo(q.x, q.y);
+            else ctx.lineTo(q.x, q.y);
+          }
+          ctx.strokeStyle = gv === 0 || gv === 8 ? TEAL : "#d7cbb8";
+          ctx.lineWidth = gv === 0 || gv === 8 ? 1.8 : 1;
+          ctx.stroke();
+        }
+      }
+
+      function drawBaseA(ctx, width, height) {
+        // 右侧淡底图 A：固定矩形网格
+        var x0 = 280;
+        var y0 = 30;
+        var w = 300;
+        var h = 240;
+        ctx.save();
+        ctx.globalAlpha = 0.35;
+        ctx.fillStyle = "#f3e6d8";
+        ctx.fillRect(x0, y0, w, h);
+        var i;
+        for (i = 0; i <= 6; i++) {
+          ctx.beginPath();
+          ctx.moveTo(x0 + (i * w) / 6, y0);
+          ctx.lineTo(x0 + (i * w) / 6, y0 + h);
+          ctx.strokeStyle = "#cfc3b0";
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(x0, y0 + (i * h) / 6);
+          ctx.lineTo(x0 + w, y0 + (i * h) / 6);
+          ctx.stroke();
+        }
+        ctx.restore();
+        ctx.strokeStyle = MUTED;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x0, y0, w, h);
+        ctx.fillStyle = MUTED;
+        ctx.font = "13px Microsoft YaHei, sans-serif";
+        ctx.fillText("底图 A（示意）", x0, y0 - 8);
+        return { x0: x0, y0: y0, w: w, h: h };
+      }
+
+      function draw() {
+        var canvas = document.getElementById("h-demo");
+        var box = surface(canvas);
+        var ctx = box.ctx;
+        var width = box.width;
+        var height = box.height;
+
+        // 分区标签
+        ctx.fillStyle = MUTED;
+        ctx.font = "13px Microsoft YaHei, sans-serif";
+        ctx.fillText("图 B 源四边形（拖角）", 30, 22);
+        drawBaseA(ctx, width, height);
+
+        var okSrc = isConvex(src);
+        var okDst = isConvex(dst);
+        var H = okSrc && okDst ? homography(src, dst) : null;
+
+        // 源棋盘示意
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(src[0].x, src[0].y);
+        src.slice(1).forEach(function (p) { ctx.lineTo(p.x, p.y); });
+        ctx.closePath();
+        ctx.clip();
+        ctx.globalAlpha = 0.9;
+        var cell = 18;
+        var minX = Math.min(src[0].x, src[1].x, src[2].x, src[3].x) - 5;
+        var maxX = Math.max(src[0].x, src[1].x, src[2].x, src[3].x) + 5;
+        var minY = Math.min(src[0].y, src[1].y, src[2].y, src[3].y) - 5;
+        var maxY = Math.max(src[0].y, src[1].y, src[2].y, src[3].y) + 5;
+        var x, y, c;
+        for (y = minY; y < maxY; y += cell) {
+          for (x = minX; x < maxX; x += cell) {
+            c = (Math.floor((x - minX) / cell) + Math.floor((y - minY) / cell)) % 2 === 0;
+            ctx.fillStyle = c ? "#e8dcc8" : "#fffdf8";
+            ctx.fillRect(x, y, cell, cell);
+          }
+        }
+        ctx.restore();
+
+        drawQuad(ctx, src, INK);
+        drawHandles(ctx, src);
+
+        // 目标：半透明 warp 网格
+        if (H) {
+          ctx.save();
+          ctx.globalAlpha = alpha;
+          drawCheckerInQuad(ctx, H, src);
+          ctx.restore();
+          drawQuad(ctx, dst, TEAL);
+        } else {
+          drawQuad(ctx, dst, "#b00");
+        }
+        drawHandles(ctx, dst);
+
+        var readout = document.getElementById("h-readout");
+        var matrixEl = document.getElementById("h-matrix");
+        if (!okSrc || !okDst) {
+          readout.textContent = "源或目标四边形不是凸的（可能自交）。请拖开角点。";
+          matrixEl.textContent = "";
+          return;
+        }
+        if (!H) {
+          readout.textContent = "无法稳定求解 H（点配置可能退化）。";
+          matrixEl.textContent = "";
+          return;
+        }
+        readout.textContent =
+          "H：图 B 源四角 → 右侧目标四角。拖任一角点，看网格如何被印到 A 上；透明度滑块模拟叠图。";
+        matrixEl.textContent = H.map(function (row) {
+          return row.map(function (v) {
+            return (Math.abs(v) < 1e-4 ? 0 : v).toFixed(4).padStart(10, " ");
+          }).join(" ");
+        }).join("\n");
+      }
+
+      function posFromEvent(canvas, e) {
+        var rect = canvas.getBoundingClientRect();
+        var clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        var clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        return {
+          x: ((clientX - rect.left) / rect.width) * (canvas.clientWidth || rect.width),
+          y: ((clientY - rect.top) / rect.height) * (canvas.clientHeight || rect.height)
+        };
+      }
+
+      function hitTest(pts, p, which) {
+        var best = -1;
+        var bestD = 16;
+        pts.forEach(function (q, i) {
+          var d = Math.hypot(q.x - p.x, q.y - p.y);
+          if (d < bestD) {
+            bestD = d;
+            best = i;
+          }
+        });
+        if (best >= 0) return { which: which, i: best };
+        return null;
+      }
+
+      var canvas = document.getElementById("h-demo");
+      function pick(e) {
+        var p = posFromEvent(canvas, e);
+        drag = hitTest(dst, p, "dst") || hitTest(src, p, "src");
+        if (e.preventDefault) e.preventDefault();
+      }
+      function move(e) {
+        if (!drag) return;
+        var p = posFromEvent(canvas, e);
+        var arr = drag.which === "src" ? src : dst;
+        arr[drag.i].x = Math.max(8, Math.min(canvas.clientWidth - 8, p.x));
+        arr[drag.i].y = Math.max(8, Math.min(canvas.clientHeight - 8, p.y));
+        draw();
+        if (e.preventDefault) e.preventDefault();
+      }
+      function up() { drag = null; }
+
+      canvas.addEventListener("mousedown", pick);
+      window.addEventListener("mousemove", move);
+      window.addEventListener("mouseup", up);
+      canvas.addEventListener("touchstart", pick, { passive: false });
+      window.addEventListener("touchmove", move, { passive: false });
+      window.addEventListener("touchend", up);
+
+      document.getElementById("h-alpha").addEventListener("input", function (e) {
+        alpha = Number(e.target.value) / 100;
+        document.getElementById("h-alpha-val").textContent = alpha.toFixed(2);
+        draw();
+      });
+
+      document.getElementById("h-reset").addEventListener("click", function () {
+        src = [
+          { x: 40, y: 50 },
+          { x: 220, y: 40 },
+          { x: 230, y: 200 },
+          { x: 30, y: 210 }
+        ];
+        dst = [
+          { x: 320, y: 60 },
+          { x: 520, y: 45 },
+          { x: 540, y: 230 },
+          { x: 300, y: 240 }
+        ];
+        draw();
+      });
+      document.getElementById("h-planar").addEventListener("click", function () {
+        src = [
+          { x: 50, y: 60 },
+          { x: 210, y: 60 },
+          { x: 210, y: 200 },
+          { x: 50, y: 200 }
+        ];
+        dst = [
+          { x: 300, y: 50 },
+          { x: 520, y: 55 },
+          { x: 510, y: 250 },
+          { x: 290, y: 240 }
+        ];
+        draw();
+      });
+      document.getElementById("h-twist").addEventListener("click", function () {
+        src = [
+          { x: 40, y: 50 },
+          { x: 220, y: 40 },
+          { x: 230, y: 200 },
+          { x: 30, y: 210 }
+        ];
+        dst = [
+          { x: 500, y: 40 },
+          { x: 320, y: 80 },
+          { x: 560, y: 220 },
+          { x: 280, y: 260 }
+        ];
+        draw();
+      });
+
+      window.addEventListener("resize", draw);
+      draw();
+    })();
+  </script>
+  <noscript>
+    <div class="wrap">
+      <p class="callout note">浏览器禁用脚本时无法拖点交互。静态图与 Python 脚本仍可用。</p>
+    </div>
+  </noscript>
+</body>
+</html>

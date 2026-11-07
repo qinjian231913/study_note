@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 17 篇 · 稠密光流：从方程到 Farneback</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        拼接与防抖 · 图像视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="16-pyramid-lk.html">第 16 篇</a>
+        <a href="17-dense-flow.html" aria-current="page">第 17 篇</a>
+        <a href="18-flow-eval.html">第 18 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 17 篇 · 光流重点 · 约 60 分钟</p>
+    <h1>稠密光流：从方程到 Farneback</h1>
+    <p class="lede">稀疏光流只在特征点上给箭头；稠密光流要求<strong>几乎每个像素</strong>都有一个位移 (u, v)。本篇从「一个方程不够」讲到平滑先验的直觉，再用「拟合小丘再对齐」讲清 Farneback，并逐项拧 OpenCV 参数、学会色轮读图。</p>
+    <div class="meta">
+      <span class="pill">先读：第 14–16 篇（亮度守恒 / LK / 金字塔）</span>
+      <span class="pill">下一篇：可视化、EPE 与失败模式</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#dense">每像素一个 (u, v)</a></li>
+        <li><a href="#not-enough">亮度守恒不够：孔径问题</a></li>
+        <li><a href="#smooth">平滑先验与 Horn-Schunck 能量直觉</a></li>
+        <li><a href="#farneback">Farneback：多项式曲面白话</a></li>
+        <li><a href="#opencv">calcOpticalFlowFarneback 参数逐项</a></li>
+        <li><a href="#viz">色轮与箭头怎么读</a></li>
+        <li><a href="#try">网页里拧一拧</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改这里</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="dense">每像素一个 (u, v)</h2>
+    <p>回顾：光流问的是「这一帧里的某个点，下一帧跑到哪」。写成位移：</p>
+    <p class="formula">x′ = x + u，　y′ = y + v</p>
+    <p>第 15–16 篇的 Lucas-Kanade 通常只在<strong>稀疏特征点</strong>上求 (u, v)。稠密光流则输出一张和图像同高同宽的「运动场」：每个像素两个浮点数，OpenCV 里形状是 <code>H × W × 2</code>，通道 0 是 u（向右为正），通道 1 是 v（向下为正，和图像坐标一致）。</p>
+    <figure>
+      <img src="assets/figures/ch17_sparse_vs_dense.png" alt="左侧稀疏几个箭头，右侧密密麻麻的稠密箭头场">
+      <figcaption>图 17-1　左：稀疏——跟踪点、估相机抖动时够用。右：稠密——看整幅谁在动、做运动分割、稠密对应时更合适。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>防抖里常先用稀疏跟踪估全局变换；要抠出「前景行人相对背景怎么流」，就更常看稠密场。两条线不是互斥，是工具箱里不同的扳手。</p>
+    </div>
+
+    <h2 id="not-enough">亮度守恒不够：孔径问题</h2>
+    <p>经典出发点叫<strong>亮度守恒</strong>：同一物理点，短时间内灰度近似不变。记 I(x, y, t) 为灰度，位移很小并做一阶展开，得到光流约束方程：</p>
+    <p class="formula">I<sub>x</sub> u + I<sub>y</sub> v + I<sub>t</sub> = 0</p>
+    <p>白话：空间梯度 (I<sub>x</sub>, I<sub>y</sub>) 告诉你「亮度往哪边变陡」，时间变化 I<sub>t</sub> 告诉你「亮度变亮还是变暗」。方程说：沿运动方向「爬坡」造成的亮度变化，要刚好抵消时间上看到的变化。</p>
+    <p>麻烦在于：一个方程、两个未知数 u 和 v。就像只告诉你「投影长度」，推不出完整向量——这就是<strong>孔径问题</strong>：透过小孔只看见一条边缘时，你只能约束<strong>垂直于边缘</strong>的分量，沿着边缘滑多少都看起来一样。</p>
+    <figure>
+      <img src="assets/figures/ch17_brightness_aperture.png" alt="左侧亮度守恒示意，右侧孔径问题多种可能位移">
+      <figcaption>图 17-2　左：物体右移时，暗区移过来会让某点变暗。右：只看见竖边缘时，斜上、斜下、水平都可能「说得通」。</figcaption>
+    </figure>
+    <p>所以任何稠密算法都必须再加假设。常见两条路：</p>
+    <ul>
+      <li><strong>邻域一起动</strong>（Lucas-Kanade 思路）：小窗口里共用一个 (u, v)，叠很多方程再最小二乘。</li>
+      <li><strong>整幅场要平滑</strong>（Horn-Schunck 思路）：相邻像素的 (u, v) 不要差太狠。</li>
+    </ul>
+    <p>Farneback 更像「局部拟合灰度曲面 + 邻域平滑」，下面分开说。</p>
+
+    <h2 id="smooth">平滑先验与 Horn-Schunck 能量直觉</h2>
+    <p>Horn-Schunck（1981）把问题说成：找一整张 (u, v) 场，让下面这个「总难受程度」尽量小——</p>
+    <p class="formula">E = Σ (I<sub>x</sub> u + I<sub>y</sub> v + I<sub>t</sub>)<sup>2</sup> + α Σ (‖∇u‖<sup>2</sup> + ‖∇v‖<sup>2</sup>)</p>
+    <p>不用会变分法。把它想成两股力在拔河：</p>
+    <ul>
+      <li><strong>数据项</strong>（前一半）：每个像素尽量满足亮度方程。α 很小、只信数据时，平坦区噪声会被放大，边缘切向也不稳。</li>
+      <li><strong>平滑项</strong>（后一半）：邻居的 u、v 差太大就罚分。α 越大，场越像「手拉手」——更干净，但真实的运动边界也会被抹糊一点。</li>
+    </ul>
+    <figure>
+      <img src="assets/figures/ch17_horn_schunck_energy.png" alt="左侧杂乱光流，右侧平滑后的光流">
+      <figcaption>图 17-3　左：几乎只信亮度，箭头乱。右：加上「邻居要像」之后，整幅场整齐许多。α 就是这两股力的旋钮。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>本篇不推导欧拉-拉格朗日方程，也不实现 HS 迭代。你只要记住：<strong>稠密光流 = 亮度约束 + 额外先验</strong>；平滑先验是最经典的一种。Farneback 用另一套局部模型，但「邻域一致」的味道还在。</p>
+    </div>
+
+    <h2 id="farneback">Farneback：多项式曲面白话</h2>
+    <p>Gunnar Farneback 的想法可以记成一句话：<strong>别盯单个像素的灰度，先把局部小窗口拟合成一块光滑的「灰度小丘」，再看两帧的小丘怎么对齐。</strong></p>
+    <p>具体一点（仍保持白话）：</p>
+    <ol>
+      <li>在像素周围取邻域，用二次多项式近似灰度：常数项、一次项（斜坡）、二次项（弯曲）。OpenCV 里 <code>poly_n</code>、<code>poly_sigma</code> 控制这块邻域多大、多平滑。</li>
+      <li>下一帧在同一位置再拟合一块小丘。若场景只是平移了一点，两块小丘的系数会差一截；从系数差可以解出位移 (u, v)。</li>
+      <li>再在空间上做加权平均（和 <code>winsize</code> 有关），并配合<strong>图像金字塔</strong>：先在小图上抓大步位移，再逐层精炼——和第 16 篇金字塔 LK 是同一类「由粗到细」。</li>
+    </ol>
+    <figure>
+      <img src="assets/figures/ch17_farneback_poly.png" alt="三维二次曲面与两帧窗口对齐示意">
+      <figcaption>图 17-4　左：局部灰度被看成二次曲面（示意）。右：比两帧系数 → 推出窗口中心的位移，再邻域平滑。</figcaption>
+    </figure>
+    <p>相对「逐像素硬解亮度方程」，多项式拟合天然带一点平滑，对噪声更稳；代价是运动边界、遮挡处仍会糊，极大位移仍要靠金字塔层数撑着。</p>
+
+    <h2 id="opencv">calcOpticalFlowFarneback 参数逐项</h2>
+    <p>OpenCV 调用长这样（灰度图，<code>uint8</code>）：</p>
+    <pre><code>flow = cv2.calcOpticalFlowFarneback(
+    prev, next, None,
+    pyr_scale, levels, winsize, iterations,
+    poly_n, poly_sigma, flags
+)
+# flow.shape == (H, W, 2)，dtype float32</code></pre>
+    <figure>
+      <img src="assets/figures/ch17_params_card.png" alt="Farneback 参数速记卡片">
+      <figcaption>图 17-5　参数速记。下面表格把「拧大/拧小会怎样」写清楚。</figcaption>
+    </figure>
+    <div class="table-scroll">
+      <table>
+        <caption>表 17-1　Farneback 参数：含义与拧法</caption>
+        <thead>
+          <tr><th>参数</th><th>典型值</th><th>它在干什么</th><th>拧大 / 拧小</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>pyr_scale</code></td>
+            <td>0.5</td>
+            <td>金字塔每一层相对上一层的边长比例</td>
+            <td>接近 1：层间变化小、层数要更多才覆盖大位移；0.5 最常用</td>
+          </tr>
+          <tr>
+            <td><code>levels</code></td>
+            <td>3</td>
+            <td>金字塔层数（含原图层）</td>
+            <td>位移大 → 加层；层太多会在过糊的顶层估错，再往下传错</td>
+          </tr>
+          <tr>
+            <td><code>winsize</code></td>
+            <td>15</td>
+            <td>平均窗口边长</td>
+            <td>越大越平滑、越抗噪、越慢，边界越糊；太小则噪、碎</td>
+          </tr>
+          <tr>
+            <td><code>iterations</code></td>
+            <td>3</td>
+            <td>每一层上的迭代次数</td>
+            <td>略增可能更准；过大收益递减、更费时</td>
+          </tr>
+          <tr>
+            <td><code>poly_n</code></td>
+            <td>5 或 7</td>
+            <td>拟合多项式用的邻域大小</td>
+            <td>7 更稳更糊；5 更跟细节。需为奇数</td>
+          </tr>
+          <tr>
+            <td><code>poly_sigma</code></td>
+            <td>1.1–1.5</td>
+            <td>给多项式邻域的高斯平滑 σ</td>
+            <td>与 <code>poly_n</code> 搭配：邻域大时可略增 σ</td>
+          </tr>
+          <tr>
+            <td><code>flags</code></td>
+            <td>0</td>
+            <td>附加选项</td>
+            <td><code>OPTFLOW_USE_INITIAL_FLOW</code> 用已有 flow 当初值；<code>OPTFLOW_FARNEBACK_GAUSSIAN</code> 用高斯窗代替盒式窗（通常更平滑）</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <figure>
+      <img src="assets/figures/ch17_params_compare.png" alt="不同 winsize 与 levels 下的色轮光流对比">
+      <figcaption>图 17-6　同一对合成帧。小窗口更碎；大窗口更匀。关掉金字塔（levels=1）时，对稍大位移更容易「抓不住」。色越匀，越接近全局平移真值。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>第三个参数 <code>flow</code> 传 <code>None</code> 表示从零开始估。视频连续帧时可把上一帧的 flow 传进去，并加上 <code>OPTFLOW_USE_INITIAL_FLOW</code>，往往更快、更稳。</p>
+    </div>
+
+    <h2 id="viz">色轮与箭头怎么读</h2>
+    <p>稠密场若每个像素都画箭头，会糊成一团。常用两种看法：</p>
+    <ul>
+      <li><strong>箭头图</strong>：每隔 N 个像素抽一根。适合检查方向对不对、有没有大片反号。</li>
+      <li><strong>色轮图</strong>（Middlebury 风格）：把 (u, v) 当成极坐标——<strong>色相 = 方向，亮度（或饱和度）= 幅度</strong>。整幅场一眼能看出「哪块在动、往哪流」。</li>
+    </ul>
+    <figure>
+      <img src="assets/figures/ch17_flow_colorwheel.png" alt="光流色轮与读图口诀">
+      <figcaption>图 17-7　色轮图例。中心接近黑 = 几乎不动；外圈越亮 = 位移越大。色相绕一圈对应方向转 360°。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/images/ch17_pair.png" alt="合成场景的前后两帧并排">
+      <figcaption>图 17-8　脚本造的纹理场景：帧 t 与平移后的 t+1。真值位移已知，方便对照算法。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch17_farneback_result.png" alt="原图、色轮光流、箭头光流三列对照">
+      <figcaption>图 17-9　Farneback 结果。全局平移时色轮应接近「一种主色」；箭头应大体同向。方块/圆内部若偏暗：那是平坦无纹理区，局部方程病态，估计不可靠——也是下篇「坑」的预告。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch17_flow_error.png" alt="端点误差热力图与直方图">
+      <figcaption>图 17-10　与真值常数场比的端点误差 EPE。第 18 篇会系统讲评估；这里先建立「中位误差多少像素」的手感。</figcaption>
+    </figure>
+    <p>脚本里色轮的核心几行（HSV → BGR）：</p>
+    <pre><code>mag, ang = cv2.cartToPolar(flow[...,0], flow[...,1], angleInDegrees=True)
+hsv[...,0] = ang / 2          # OpenCV 的 H 是 0–180
+hsv[...,1] = 255
+hsv[...,2] = 按幅度归一化到 0–255
+bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)</code></pre>
+
+    <h2 id="try">网页里拧一拧</h2>
+    <p>下面两个示意不需要 Python：先建立「平滑先验」和「色轮读方向」的手感。</p>
+
+    <h3>平滑权重 α</h3>
+    <p>橙色箭头偏「只信数据」（故意加点噪声）；青色是平滑后的场。拖 α，看场怎样从乱变齐，以及运动边界怎样被抹。</p>
+    <div class="playground">
+      <canvas id="smooth-demo" class="demo" width="820" height="320" aria-label="平滑先验示意"></canvas>
+      <div class="controls">
+        <label for="alpha">平滑权重 α</label>
+        <input id="alpha" type="range" min="0" max="100" step="1" value="35">
+        <output id="alpha-out" for="alpha">0.35</output>
+      </div>
+      <div class="actions">
+        <button type="button" class="primary" id="smooth-reset">恢复示例</button>
+        <button type="button" id="smooth-noise">换一批噪声</button>
+      </div>
+      <p class="readout" id="smooth-readout" aria-live="polite"></p>
+    </div>
+
+    <h3>色轮点选</h3>
+    <p>在色轮上点击或拖动：读出方向角、幅度，以及对应的 (u, v)。右侧示意「这种颜色在稠密图里代表什么运动」。</p>
+    <div class="playground">
+      <canvas id="wheel-demo" class="demo" width="820" height="340" aria-label="光流色轮交互"></canvas>
+      <div class="actions">
+        <button type="button" class="primary" id="wheel-right">示例：向右</button>
+        <button type="button" id="wheel-down">示例：向下</button>
+        <button type="button" id="wheel-reset">回到中心（静止）</button>
+      </div>
+      <p class="readout" id="wheel-readout" aria-live="polite"></p>
+    </div>
+
+    <h2 id="run">运行脚本</h2>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <p>在系列根目录（能看见 <code>index.html</code>）激活虚拟环境后：</p>
+      <pre class="terminal"><code>source .venv/bin/activate
+MPLCONFIGDIR=/tmp/mpl-cache python code/ch17_dense_flow.py</code></pre>
+      <p>成功时终端出现「自检通过」，并写出：</p>
+      <ul>
+        <li><code>assets/figures/ch17_sparse_vs_dense.png</code>、<code>ch17_brightness_aperture.png</code>、<code>ch17_horn_schunck_energy.png</code>、<code>ch17_farneback_poly.png</code></li>
+        <li><code>ch17_flow_colorwheel.png</code>、<code>ch17_farneback_result.png</code>、<code>ch17_flow_error.png</code>、<code>ch17_params_compare.png</code>、<code>ch17_params_card.png</code></li>
+        <li><code>assets/images/ch17_pair.png</code>、<code>ch17_flow_color.png</code>、<code>ch17_flow_arrows.png</code>、<code>ch17_colorwheel.png</code></li>
+        <li>只跟随「改这里」：<code>assets/figures/ch17_my_flow.png</code></li>
+      </ul>
+    </div>
+
+    <h2 id="edit">改这里</h2>
+    <p>打开 <a href="code/ch17_dense_flow.py"><code>code/ch17_dense_flow.py</code></a>。顶部「改这里」只影响 <code>ch17_my_flow.png</code>；课文对照图仍按固定参数重画。</p>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>把 <code>MY_SHIFT_X = 6</code>、<code>MY_SHIFT_Y = -3</code> 改成 <code>12</code> 与 <code>-1</code>，保持其它参数。看中位估计是否跟得上；若偏差变大，把 <code>MY_LEVELS</code> 加到 <code>4</code> 再跑。</li>
+        <li>把 <code>MY_WINSIZE</code> 改成 <code>5</code>，再改成 <code>31</code>。小窗口色轮更噪，大窗口更匀、边界更糊。</li>
+        <li>把 <code>MY_LEVELS = 1</code>，位移仍用比较大的值（例如 12 像素）。观察估计是否明显变差——这就是金字塔的价值。</li>
+        <li>把 <code>MY_POLY_N</code> 在 <code>5</code> 与 <code>7</code> 之间切换，体会「更跟细节」和「更稳更糊」。</li>
+      </ol>
+    </div>
+
+    <h2 id="check">自测</h2>
+    <p>先自己答，再展开。</p>
+    <details class="quiz">
+      <summary>1. 稠密光流的输出，在 OpenCV 里典型形状是什么？两个通道分别是什么？</summary>
+      <p><code>H × W × 2</code>。通道 0 是水平位移 u（向右为正），通道 1 是竖直位移 v（向下为正）。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. 为什么说「只有亮度守恒方程」不够求出唯一的 (u, v)？</summary>
+      <p>一个方程两个未知数。几何上对应孔径问题：沿边缘切向的运动在局部无法区分，必须加窗口共用、平滑先验或其它假设。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. Horn-Schunck 能量里，平滑项变大（α 变大）通常会怎样？</summary>
+      <p>场更平滑、噪声更小，但真实运动边界更容易被抹糊；数据项的话语权相对变弱。</p>
+    </details>
+    <details class="quiz">
+      <summary>4. 用一句话说明 Farneback 在干什么？</summary>
+      <p>在局部用多项式（二次曲面）拟合灰度，比较两帧的拟合系数得到位移，再结合邻域平均与金字塔由粗到细。</p>
+    </details>
+    <details class="quiz">
+      <summary>5. <code>winsize</code> 与 <code>levels</code> 各优先解决什么问题？</summary>
+      <p><code>winsize</code> 管平滑与抗噪（太大糊边界）；<code>levels</code> 管大位移（由粗到细）。位移大先加层，场太噪先略加大窗口。</p>
+    </details>
+    <details class="quiz">
+      <summary>6. 色轮图里，「颜色」和「明暗」通常分别编码什么？</summary>
+      <p>颜色（色相）编码运动方向；明暗（或饱和度）编码运动幅度。接近黑色通常表示几乎静止。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>下一篇专门谈<strong>怎么评价、怎么画、怎么翻车</strong>：EPE、遮挡与光照、重复纹理，以及和深度学习光流（如 RAFT）的对照；并收束稀疏 vs 稠密各自适合什么。</p>
+    <p><a href="18-flow-eval.html">第 18 篇 · 光流可视化、评估与常见坑</a>（待写）</p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="16-pyramid-lk.html">上一篇</a>
+      <a href="index.html">目录</a>
+      <a href="18-flow-eval.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var INK = "#1c1915";
+      var MUTED = "#5c564c";
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+      var noiseSeed = 3;
+
+      function surface(canvas) {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var width = canvas.clientWidth || 640;
+        var height = canvas.clientHeight || 300;
+        var pw = Math.round(width * dpr);
+        var ph = Math.round(height * dpr);
+        if (canvas.width !== pw || canvas.height !== ph) {
+          canvas.width = pw;
+          canvas.height = ph;
+        }
+        var ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(0, 0, width, height);
+        return { ctx: ctx, width: width, height: height };
+      }
+
+      function mulberry32(a) {
+        return function () {
+          var t = (a += 0x6d2b79f5);
+          t = Math.imul(t ^ (t >>> 15), t | 1);
+          t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+          return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        };
+      }
+
+      // ---------- 平滑先验 ----------
+      function drawSmooth() {
+        var canvas = document.getElementById("smooth-demo");
+        var box = surface(canvas);
+        var ctx = box.ctx;
+        var W = box.width;
+        var H = box.height;
+        var alpha = Number(document.getElementById("alpha").value) / 100;
+        document.getElementById("alpha-out").textContent = alpha.toFixed(2);
+
+        var cols = 12;
+        var rows = 7;
+        var left = 36;
+        var top = 36;
+        var gw = (W - 72) / cols;
+        var gh = (H - 72) / rows;
+        var rand = mulberry32(noiseSeed);
+
+        // 真值：左半向右，右半略向上（制造一条竖向运动边界）
+        function trueFlow(i, j) {
+          var x = (i + 0.5) / cols;
+          if (x < 0.55) return { u: 1.15, v: 0.12 };
+          return { u: 0.25, v: -0.95 };
+        }
+
+        var noisy = [];
+        var smooth = [];
+        var i, j;
+        for (j = 0; j < rows; j++) {
+          noisy[j] = [];
+          smooth[j] = [];
+          for (i = 0; i < cols; i++) {
+            var t = trueFlow(i, j);
+            var n = {
+              u: t.u + (rand() - 0.5) * 1.4,
+              v: t.v + (rand() - 0.5) * 1.4
+            };
+            noisy[j][i] = n;
+            // 与真值混合：α 大 → 更接近平滑真值场；同时邻域再平均一点
+            smooth[j][i] = {
+              u: (1 - alpha) * n.u + alpha * t.u,
+              v: (1 - alpha) * n.v + alpha * t.v
+            };
+          }
+        }
+        // 邻域平均强度随 α 增加
+        if (alpha > 0.02) {
+          var blended = [];
+          for (j = 0; j < rows; j++) {
+            blended[j] = [];
+            for (i = 0; i < cols; i++) {
+              var su = 0;
+              var sv = 0;
+              var c = 0;
+              var dj, di;
+              for (dj = -1; dj <= 1; dj++) {
+                for (di = -1; di <= 1; di++) {
+                  var jj = j + dj;
+                  var ii = i + di;
+                  if (jj < 0 || jj >= rows || ii < 0 || ii >= cols) continue;
+                  su += smooth[jj][ii].u;
+                  sv += smooth[jj][ii].v;
+                  c++;
+                }
+              }
+              var w = alpha * 0.85;
+              blended[j][i] = {
+                u: (1 - w) * smooth[j][i].u + w * (su / c),
+                v: (1 - w) * smooth[j][i].v + w * (sv / c)
+              };
+            }
+          }
+          smooth = blended;
+        }
+
+        // 背景分区
+        ctx.fillStyle = "#f3e6d8";
+        ctx.fillRect(left, top, gw * cols * 0.55, gh * rows);
+        ctx.fillStyle = "#e5f3f1";
+        ctx.fillRect(left + gw * cols * 0.55, top, gw * cols * 0.45, gh * rows);
+        ctx.strokeStyle = "#e3d9c8";
+        ctx.strokeRect(left, top, gw * cols, gh * rows);
+
+        function drawField(field, color, scale) {
+          for (j = 0; j < rows; j++) {
+            for (i = 0; i < cols; i++) {
+              var x = left + (i + 0.5) * gw;
+              var y = top + (j + 0.5) * gh;
+              var f = field[j][i];
+              var x2 = x + f.u * scale;
+              var y2 = y + f.v * scale;
+              ctx.strokeStyle = color;
+              ctx.fillStyle = color;
+              ctx.lineWidth = 1.6;
+              ctx.beginPath();
+              ctx.moveTo(x, y);
+              ctx.lineTo(x2, y2);
+              ctx.stroke();
+              ctx.beginPath();
+              ctx.arc(x, y, 2.2, 0, Math.PI * 2);
+              ctx.fill();
+            }
+          }
+        }
+
+        drawField(noisy, WAVE, 14);
+        drawField(smooth, TEAL, 14);
+
+        ctx.fillStyle = WAVE;
+        ctx.font = "13px Microsoft YaHei, sans-serif";
+        ctx.fillText("橙：偏数据（带噪）", left, 22);
+        ctx.fillStyle = TEAL;
+        ctx.fillText("青：加平滑后", left + 160, 22);
+
+        var tip =
+          alpha < 0.15
+            ? "α 很小：场跟着噪声走，左右分区的边界反而「看起来」更锋利，但不稳。"
+            : alpha > 0.7
+              ? "α 很大：箭头整齐，但左右不同运动被抹成过渡带——边界糊了。"
+              : "中等 α：噪声被压住，运动边界还依稀可见。工程上常在这两头之间折中。";
+        document.getElementById("smooth-readout").textContent =
+          "当前 α = " + alpha.toFixed(2) + "。" + tip;
+      }
+
+      document.getElementById("alpha").addEventListener("input", drawSmooth);
+      document.getElementById("smooth-reset").addEventListener("click", function () {
+        document.getElementById("alpha").value = 35;
+        noiseSeed = 3;
+        drawSmooth();
+      });
+      document.getElementById("smooth-noise").addEventListener("click", function () {
+        noiseSeed = (noiseSeed * 17 + 11) % 10007;
+        drawSmooth();
+      });
+
+      // ---------- 色轮 ----------
+      var pick = { u: 0.55, v: 0.0 }; // 归一化到单位圆内
+      var dragging = false;
+
+      function hsvToRgb(h, s, v) {
+        // h in [0,360)
+        var c = v * s;
+        var x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+        var m = v - c;
+        var r = 0, g = 0, b = 0;
+        if (h < 60) { r = c; g = x; }
+        else if (h < 120) { r = x; g = c; }
+        else if (h < 180) { g = c; b = x; }
+        else if (h < 240) { g = x; b = c; }
+        else if (h < 300) { r = x; b = c; }
+        else { r = c; b = x; }
+        return [
+          Math.round((r + m) * 255),
+          Math.round((g + m) * 255),
+          Math.round((b + m) * 255)
+        ];
+      }
+
+      function flowColor(u, v) {
+        var mag = Math.sqrt(u * u + v * v);
+        if (mag < 1e-6) return [20, 20, 20];
+        var ang = Math.atan2(v, u); // [-pi, pi]
+        var h = ((ang + Math.PI) / (2 * Math.PI)) * 360;
+        var val = Math.min(1, mag);
+        return hsvToRgb(h, 1, 0.2 + 0.8 * val);
+      }
+
+      function drawWheelSafe() {
+        var canvas = document.getElementById("wheel-demo");
+        var box = surface(canvas);
+        var ctx = box.ctx;
+        var W = box.width;
+        var H = box.height;
+        var cx = W * 0.30;
+        var cy = H * 0.52;
+        var R = Math.min(W * 0.28, H * 0.40);
+
+        var off = document.createElement("canvas");
+        var res = Math.round(R * 2);
+        off.width = res;
+        off.height = res;
+        var octx = off.getContext("2d");
+        var img = octx.createImageData(res, res);
+        var data = img.data;
+        var y, x;
+        for (y = 0; y < res; y++) {
+          for (x = 0; x < res; x++) {
+            var fx = (x + 0.5) / res * 2 - 1;
+            var fy = (y + 0.5) / res * 2 - 1;
+            var m = Math.sqrt(fx * fx + fy * fy);
+            var idx = (y * res + x) * 4;
+            if (m > 1) {
+              data[idx] = 251;
+              data[idx + 1] = 248;
+              data[idx + 2] = 242;
+              data[idx + 3] = 255;
+            } else {
+              var rgb = flowColor(fx, fy);
+              data[idx] = rgb[0];
+              data[idx + 1] = rgb[1];
+              data[idx + 2] = rgb[2];
+              data[idx + 3] = 255;
+            }
+          }
+        }
+        octx.putImageData(img, 0, 0);
+        ctx.drawImage(off, cx - R, cy - R, 2 * R, 2 * R);
+        ctx.beginPath();
+        ctx.arc(cx, cy, R, 0, Math.PI * 2);
+        ctx.strokeStyle = INK;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        // 拾取点
+        var px = cx + pick.u * R;
+        var py = cy + pick.v * R;
+        ctx.beginPath();
+        ctx.arc(px, py, 7, 0, Math.PI * 2);
+        ctx.fillStyle = "#fff";
+        ctx.fill();
+        ctx.strokeStyle = INK;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // 右侧示意箭头
+        var rx = W * 0.68;
+        var ry = H * 0.48;
+        var rgb = flowColor(pick.u, pick.v);
+        ctx.fillStyle = "rgb(" + rgb[0] + "," + rgb[1] + "," + rgb[2] + ")";
+        ctx.fillRect(rx - 70, ry - 70, 140, 140);
+        ctx.strokeStyle = INK;
+        ctx.strokeRect(rx - 70, ry - 70, 140, 140);
+
+        var mag = Math.sqrt(pick.u * pick.u + pick.v * pick.v);
+        var scale = 55;
+        ctx.strokeStyle = "#fff";
+        ctx.fillStyle = "#fff";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(rx, ry);
+        ctx.lineTo(rx + pick.u * scale, ry + pick.v * scale);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(rx, ry, 4, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = INK;
+        ctx.font = "13px Microsoft YaHei, sans-serif";
+        ctx.fillText("色轮（点选方向）", cx - 52, 28);
+        ctx.fillText("这种颜色 ≈ 这种运动", rx - 70, ry - 82);
+
+        var ang = Math.atan2(pick.v, pick.u) * 180 / Math.PI;
+        var tip =
+          mag < 0.08
+            ? "接近中心：幅度≈0，画面里看起来几乎是黑/灰，表示静止。"
+            : "方向约 " + ang.toFixed(0) + "°（图像坐标：右为 0°，顺时针为正的屏幕角与数学角不同，这里用 atan2(v,u)）。";
+        document.getElementById("wheel-readout").textContent =
+          "归一化 (u, v) = (" + pick.u.toFixed(2) + ", " + pick.v.toFixed(2) +
+          ")，幅度 = " + mag.toFixed(2) + "。" + tip;
+      }
+
+      function setPickFromEvent(ev) {
+        var canvas = document.getElementById("wheel-demo");
+        var rect = canvas.getBoundingClientRect();
+        var x = ev.clientX - rect.left;
+        var y = ev.clientY - rect.top;
+        var W = canvas.clientWidth || 640;
+        var H = canvas.clientHeight || 340;
+        var cx = W * 0.30;
+        var cy = H * 0.52;
+        var R = Math.min(W * 0.28, H * 0.40);
+        var u = (x - cx) / R;
+        var v = (y - cy) / R;
+        var m = Math.sqrt(u * u + v * v);
+        if (m > 1) {
+          u /= m;
+          v /= m;
+        }
+        pick.u = u;
+        pick.v = v;
+        drawWheelSafe();
+      }
+
+      var wheelCanvas = document.getElementById("wheel-demo");
+      wheelCanvas.addEventListener("pointerdown", function (ev) {
+        dragging = true;
+        wheelCanvas.setPointerCapture(ev.pointerId);
+        setPickFromEvent(ev);
+      });
+      wheelCanvas.addEventListener("pointermove", function (ev) {
+        if (!dragging) return;
+        setPickFromEvent(ev);
+      });
+      wheelCanvas.addEventListener("pointerup", function () { dragging = false; });
+      wheelCanvas.addEventListener("pointercancel", function () { dragging = false; });
+
+      document.getElementById("wheel-right").addEventListener("click", function () {
+        pick = { u: 0.75, v: 0 };
+        drawWheelSafe();
+      });
+      document.getElementById("wheel-down").addEventListener("click", function () {
+        pick = { u: 0, v: 0.75 };
+        drawWheelSafe();
+      });
+      document.getElementById("wheel-reset").addEventListener("click", function () {
+        pick = { u: 0, v: 0 };
+        drawWheelSafe();
+      });
+
+      window.addEventListener("resize", function () {
+        drawSmooth();
+        drawWheelSafe();
+      });
+
+      drawSmooth();
+      drawWheelSafe();
+    })();
+  </script>
+</body>
+</html>

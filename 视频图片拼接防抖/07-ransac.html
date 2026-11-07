@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 7 篇 · RANSAC 与鲁棒估计单应性</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        拼接与防抖 · 图像视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="06-matching.html">第 6 篇</a>
+        <a href="07-ransac.html" aria-current="page">第 7 篇</a>
+        <a href="08-stitch.html">第 8 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 7 篇 · 鲁棒估计 · 约 55 分钟</p>
+    <h1>RANSAC 与鲁棒估计单应性</h1>
+    <p class="lede">第 6 篇匹配出来的点对，一定混着「对错」。错的叫外点；只要外点一多，直接最小二乘估出的单应 H 就会被带偏。本篇用白话把 RANSAC 拆开：随机抽 4 对 → 估一张 H → 数有多少点服这张 H → 多抽几轮，留下内点最多的那张。最后接到 OpenCV 的 <code>findHomography(..., RANSAC)</code>，并画出内点/外点。</p>
+    <div class="meta">
+      <span class="pill">先读：第 3 篇单应、第 6 篇匹配</span>
+      <span class="pill">第 8 篇会把估好的 H 放进拼接流水线</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#outliers">外点：为什么「全点拟合」会翻车</a></li>
+        <li><a href="#idea">RANSAC 一句话直觉</a></li>
+        <li><a href="#loop">循环白话：抽 4 点 → 估 H → 数内点 → 迭代</a></li>
+        <li><a href="#thresh">阈值与迭代次数</a></li>
+        <li><a href="#opencv">接到 findHomography 的 RANSAC</a></li>
+        <li><a href="#vis">内点 / 外点可视化</a></li>
+        <li><a href="#try">交互：拖滑块看 RANSAC</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改这里</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="outliers">外点：为什么「全点拟合」会翻车</h2>
+    <p>两张图做特征匹配后，你会得到一堆「图 A 的点 ↔ 图 B 的点」。理想情况：每一对都对应同一物理点，且都服从<strong>同一张单应矩阵 H</strong>（第 3 篇：平面场景下，H 是两平面之间的通行证）。</p>
+    <p>现实里总会混进<strong>外点（outlier）</strong>：</p>
+    <ul>
+      <li>描述子撞车：两个其实不是同一处，却被匹配上；</li>
+      <li>重复纹理（窗户、砖墙）导致张冠李戴；</li>
+      <li>场景里有近处物体，视差大，根本不在「一张平面 H」上。</li>
+    </ul>
+    <p>与外点相对的是<strong>内点（inlier）</strong>：误差小、真的服从那张 H 的匹配。</p>
+    <div class="callout note">
+      <p>生活类比：你想估「教室里同学们的平均身高」。混进几个写错成 3 米、0.2 米的数，普通平均会被严重拉偏。RANSAC 的思路不是「对每个数一视同仁」，而是先找出「看起来像一伙」的多数派，再只相信他们。</p>
+    </div>
+    <p>若对<strong>全部</strong>对应点做最小二乘估 H，外点会把矩阵拽歪。下图用合成数据演示：左是混了外点的匹配；中是全点硬拟合，格点映射偏了几十像素；右是「假如我们知道谁是内点」再拟合，几乎贴合真 H。</p>
+    <figure>
+      <img src="assets/figures/ch07_outliers_problem.png" alt="外点毁掉全体最小二乘，内点拟合接近真值">
+      <figcaption>图 7-1　外点问题。全点拟合平均偏差约 45px；只用内点约 0.5px。RANSAC 要做的，就是在不知道标签时，尽量自动找出内点那一伙。</figcaption>
+    </figure>
+
+    <h2 id="idea">RANSAC 一句话直觉</h2>
+    <p><strong>RANSAC</strong> = <strong>RA</strong>ndom <strong>SA</strong>mple <strong>C</strong>onsensus，随机抽样一致性。核心不是一次算完，而是：</p>
+    <p class="formula">多抽几次「最小样本」→ 每次估一个模型 → 看谁能解释最多的点 → 留下赢家</p>
+    <p>对单应性，最小样本是 <strong>4 对</strong>对应点（第 2、3 篇：H 有 8 自由度，一对点贡献 2 个约束）。</p>
+    <p>为什么「随机抽」管用？因为：</p>
+    <ul>
+      <li>若碰巧抽到 4 个都是内点，估出的 H 就接近真值，于是<strong>很多</strong>其它内点也会落在误差阈值内；</li>
+      <li>若抽到哪怕 1 个外点，估出的 H 通常很离谱，只有极少数点碰巧「服」它；</li>
+      <li>多抽几百轮，只要内点比例不是极低，就很有机会至少撞上一次「全内点样本」。</li>
+    </ul>
+
+    <h2 id="loop">循环白话：抽 4 点 → 估 H → 数内点 → 迭代</h2>
+    <p>把算法写成四步口头禅，对着下图记：</p>
+    <figure>
+      <img src="assets/figures/ch07_ransac_loop.png" alt="RANSAC 四步循环示意图">
+      <figcaption>图 7-2　RANSAC 循环。最后通常再用「全部内点」精炼一次 H（OpenCV 内部也会做类似步骤）。</figcaption>
+    </figure>
+    <ol>
+      <li><strong>抽样本</strong>：从全部匹配里随机挑 4 对（不重复）。</li>
+      <li><strong>估模型</strong>：用这 4 对算一张候选 H（可用 <code>getPerspectiveTransform</code>）。</li>
+      <li><strong>数内点</strong>：把<strong>所有</strong>匹配点用这张 H 映过去，看与真实目标点的距离。距离小于阈值 t 的，算内点。</li>
+      <li><strong>记最好</strong>：若这轮内点比历史最多还多，就更新「目前最好的 H」。</li>
+    </ol>
+    <p>重复 1–4 很多次。结束后：手里有一张「内点最多」的 H，以及一张 0/1 掩膜（谁是内点）。</p>
+    <p>重投影误差的白话定义：</p>
+    <p class="formula">误差 = ‖ H · p<sub>A</sub> − p<sub>B</sub> ‖　（像素距离）</p>
+    <p>先把图 A 的点 p<sub>A</sub> 用齐次坐标乘上 H，除以第三维得到预测位置；再和匹配给出的图 B 点 p<sub>B</sub> 比欧氏距离。小于阈值 → 内点。</p>
+    <figure>
+      <img src="assets/figures/ch07_sample_fit.png" alt="一次好运抽样：四对样本与内点分类">
+      <figcaption>图 7-3　一次「好运」抽样示意。橙圈是抽出的 4 对；青点是误差 &lt; 3px 的内点，橙叉是外点。好运样本会带回一大片青色。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>坏运样本呢？四个点里只要有一个外点，候选 H 往往扭曲得很厉害，内点数会少得可怜。RANSAC 不怕坏运——它靠「多试几次」把好运捞上来。</p>
+    </div>
+
+    <h2 id="thresh">阈值与迭代次数</h2>
+    <p>两个旋钮最常调：</p>
+    <div class="table-scroll">
+      <table>
+        <caption>表 7-1　RANSAC 常用旋钮</caption>
+        <thead>
+          <tr><th>参数</th><th>白话</th><th>调大时</th><th>调小时</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>ransacReprojThreshold</code></td>
+            <td>「服不服这张 H」的像素门槛</td>
+            <td>内点变多，可能把外点也收进来</td>
+            <td>更挑剔，真内点也可能被误杀</td>
+          </tr>
+          <tr>
+            <td><code>maxIters</code></td>
+            <td>最多随机抽几轮</td>
+            <td>更稳，更可能撞上好样本；更慢</td>
+            <td>快，但外点多时容易「还没抽到就停了」</td>
+          </tr>
+          <tr>
+            <td><code>confidence</code></td>
+            <td>希望「至少抽到一次好样本」的概率</td>
+            <td>OpenCV 可能自动增加实际迭代</td>
+            <td>可能更早停</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p>经验起点：图像特征匹配估 H 时，阈值常取 <strong>2～5 像素</strong>（看分辨率与噪声）；迭代几百到一两千。外点特别多时，要更多迭代，或先用 Lowe 比率等手段减外点（第 6 篇）。</p>
+    <figure>
+      <img src="assets/figures/ch07_threshold.png" alt="不同重投影阈值下的内点数与精确率召回率">
+      <figcaption>图 7-4　阈值两难：越大内点越多，但精确率可能下降（掺假）；太小则召回变差（漏真）。没有万能值，要对着可视化调。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch07_iterations.png" alt="迭代次数与迄今最佳内点数、估计误差">
+      <figcaption>图 7-5　左：随着迭代，迄今最多内点数呈阶梯上升。右：迭代太少时，估出的 H 平均误差更大、更不稳。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>理论旁注（可先跳过）：若内点比例为 w，一次抽 4 个全是内点的概率约为 w⁴。想让「至少成功一次」的概率 ≥ p，需要的迭代大约是 log(1−p) / log(1−w⁴)。w 越小，所需迭代暴涨——所以「先减外点、再 RANSAC」往往比「死加迭代」更香。</p>
+    </div>
+
+    <h2 id="opencv">接到 findHomography 的 RANSAC</h2>
+    <p>OpenCV 一句话完成「估 H + RANSAC」：</p>
+    <pre><code>H, mask = cv2.findHomography(
+    src_pts,          # (N,1,2) 或 (N,2)，图 A
+    dst_pts,          # 对应的图 B
+    method=cv2.RANSAC,
+    ransacReprojThreshold=3.0,
+    maxIters=2000,
+    confidence=0.995,
+)
+# mask[i]=1 表示第 i 对是内点</code></pre>
+    <p>对照实验：同一批带外点的数据，<code>method=0</code>（全体最小二乘）会被带偏；<code>method=cv2.RANSAC</code> 能回到真值附近。</p>
+    <figure>
+      <img src="assets/figures/ch07_findHomography.png" alt="全体拟合与 RANSAC 估 H 的格点映射对照">
+      <figcaption>图 7-6　格点经真 H、全体拟合 H、RANSAC H 映射后的位置。RANSAC 与真值几乎重合；全体拟合明显偏离。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p><code>mask</code> 是 RANSAC 的副产品，却是调试神器：把 <code>mask==0</code> 的匹配画成另一种颜色，一眼看出算法「扔掉了谁」。第 8 篇拼接时，也常用内点去估计画布范围、检查重叠是否够。</p>
+    </div>
+
+    <h2 id="vis">内点 / 外点可视化</h2>
+    <p>读图习惯：</p>
+    <ul>
+      <li><strong>青色圆点</strong>：RANSAC 判为内点；</li>
+      <li><strong>橙色叉</strong>：外点；</li>
+      <li>若再叠「真 H / 估 H」对探针点的映射，可检查估得准不准。</li>
+    </ul>
+    <figure>
+      <img src="assets/figures/ch07_inlier_outlier.png" alt="RANSAC 内点外点在图 A 图 B 上的分类">
+      <figcaption>图 7-7　<code>findHomography(..., RANSAC)</code> 的分类结果。本例与真内点重合 67，误收外点 0；估 H 映射（菱形）贴住真 H（空心圈）。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch07_match_lines.png" alt="图 A 与图 B 并排的匹配连线，青内橙外">
+      <figcaption>图 7-8　并排连线观感：青色线大致「平行有序」；橙色线东拉西扯。拼接调试时，先看连线再看数值，往往更快。</figcaption>
+    </figure>
+
+    <h2 id="try">交互：拖滑块看 RANSAC</h2>
+    <p>下面在浏览器里用合成对应点跑一版简化 RANSAC（与脚本同一思路：抽 4 点 → 估 H → 数内点）。调外点比例、阈值、迭代次数，观察内点数与「和真 H 的偏差」如何变。</p>
+    <div class="playground">
+      <canvas id="ransac-demo" class="demo tall" width="820" height="380" aria-label="RANSAC 内点外点交互演示"></canvas>
+      <div class="controls">
+        <label for="out-ratio">外点比例</label>
+        <input id="out-ratio" type="range" min="0" max="60" step="5" value="35">
+        <output id="out-ratio-out" for="out-ratio">35%</output>
+        <label for="thresh">阈值 t</label>
+        <input id="thresh" type="range" min="1" max="12" step="0.5" value="3">
+        <output id="thresh-out" for="thresh">3.0 px</output>
+        <label for="iters">迭代次数</label>
+        <input id="iters" type="range" min="20" max="800" step="20" value="200">
+        <output id="iters-out" for="iters">200</output>
+      </div>
+      <div class="actions">
+        <button type="button" class="primary" id="ransac-run">再跑一轮 RANSAC</button>
+        <button type="button" id="ransac-reset">恢复默认</button>
+      </div>
+      <p class="readout" id="ransac-readout" aria-live="polite"></p>
+    </div>
+
+    <h2 id="run">运行脚本</h2>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <pre class="terminal"><code>source .venv/bin/activate   # 若尚未激活
+MPLCONFIGDIR=/tmp/mpl-cache python code/ch07_ransac.py</code></pre>
+      <p>终端应出现「自检通过」，并写出 <code>ch07_outliers_problem.png</code>、<code>ch07_ransac_loop.png</code>、<code>ch07_sample_fit.png</code>、<code>ch07_inlier_outlier.png</code>、<code>ch07_match_lines.png</code>、<code>ch07_threshold.png</code>、<code>ch07_iterations.png</code>、<code>ch07_findHomography.png</code>，以及你的 <code>ch07_my_ransac.png</code>。</p>
+    </div>
+
+    <h2 id="edit">改这里</h2>
+    <p>打开 <a href="code/ch07_ransac.py"><code>code/ch07_ransac.py</code></a>，改顶部参数。它们<strong>只</strong>影响 <code>ch07_my_ransac.png</code>；课文对照图仍用固定种子重画。</p>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>把 <code>OUTLIER_RATIO = 0.35</code> 改成 <code>0.05</code>，再改成 <code>0.55</code>。外点很少时内点应接近全体；外点很多时，看误差是否变大、内点是否不稳。</li>
+        <li>固定外点比例，把 <code>RANSAC_THRESH</code> 从 <code>1.0</code> 调到 <code>8.0</code>。观察内点数上升时，与真 H 的格点误差是否开始变差（掺假信号）。</li>
+        <li>把 <code>RANSAC_ITERS</code> 改成 <code>20</code>，再改成 <code>1000</code>。迭代太少时多跑几次脚本，误差会跳来跳去。</li>
+        <li>把 <code>NOISE_PX</code> 改成 <code>0.3</code> 与 <code>3.0</code>。噪声大时，同样阈值下内点变少——阈值要跟着噪声一起想。</li>
+      </ol>
+    </div>
+
+    <h2 id="check">自测</h2>
+    <p>先自己答，再展开。</p>
+    <details class="quiz">
+      <summary>1. 什么是外点？它对「全体最小二乘估 H」有什么影响？</summary>
+      <p>外点是不符合真实模型（这里是真单应 H）的错误匹配或离群对应。全体最小二乘会试图迁就它们，从而把 H 带偏，映射误差变大。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. 估单应时，RANSAC 每一轮为什么抽 4 对点，而不是 3 对或 10 对？</summary>
+      <p>一张 H 实质 8 自由度，一对点给 2 个约束，最少 4 对刚好定解。抽 3 对不够定透视；抽很多对则「这一轮样本里更容易混进外点」，好运变少。RANSAC 用「最小样本 + 多轮」平衡这一点。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. 白话说出 RANSAC 四步循环。</summary>
+      <p>随机抽 4 对 → 估一张候选 H → 用阈值数有多少点是内点 → 保留内点最多的模型；多轮迭代后再（可选）用全部内点精炼。</p>
+    </details>
+    <details class="quiz">
+      <summary>4. <code>findHomography</code> 返回的 <code>mask</code> 是什么？调大 <code>ransacReprojThreshold</code> 通常会怎样？</summary>
+      <p><code>mask[i]=1</code> 表示第 i 对匹配被判为内点。阈值调大后，判为内点的数量通常增加，但也可能把外点收进来，精确率下降。</p>
+    </details>
+    <details class="quiz">
+      <summary>5. 外点比例已经很高时，只加大 <code>maxIters</code> 一定够吗？还可以先做什么？</summary>
+      <p>加大迭代有帮助，但所需次数随内点比例下降而急剧增加。更有效的是先减少外点：更好的匹配策略、Lowe 比率检验、互检、几何预过滤等（第 6 篇），再交给 RANSAC。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>你已经能在外点噪声下鲁棒地估出 H。下一篇把整条<strong>全景拼接流水线</strong>串起来：检测 → 匹配 → RANSAC 估 H → 算画布 → warp 叠图，先跑通两图，再谈多图。</p>
+    <p><a href="08-stitch.html">第 8 篇 · 全景拼接流水线（总览）</a>（待写）</p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="06-matching.html">上一篇</a>
+      <a href="index.html">目录</a>
+      <a href="08-stitch.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+      var MUTED = "#5c564c";
+      var INK = "#1c1915";
+
+      var canvas = document.getElementById("ransac-demo");
+      var ratioEl = document.getElementById("out-ratio");
+      var threshEl = document.getElementById("thresh");
+      var itersEl = document.getElementById("iters");
+      var ratioOut = document.getElementById("out-ratio-out");
+      var threshOut = document.getElementById("thresh-out");
+      var itersOut = document.getElementById("iters-out");
+      var readout = document.getElementById("ransac-readout");
+
+      var state = {
+        src: [],
+        dst: [],
+        isTrue: [],
+        mask: [],
+        H: null,
+        seed: 7
+      };
+
+      function mulberry32(a) {
+        return function () {
+          a |= 0;
+          a = (a + 0x6d2b79f5) | 0;
+          var t = Math.imul(a ^ (a >>> 15), 1 | a);
+          t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+          return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        };
+      }
+
+      function trueH() {
+        // 与脚本同思路的温和透视
+        return homographyFromQuads(
+          [
+            { x: 0, y: 0 },
+            { x: 200, y: 0 },
+            { x: 200, y: 150 },
+            { x: 0, y: 150 }
+          ],
+          [
+            { x: 18, y: 22 },
+            { x: 210, y: 8 },
+            { x: 228, y: 168 },
+            { x: 12, y: 155 }
+          ]
+        );
+      }
+
+      function applyH(H, p) {
+        var x = H[0][0] * p.x + H[0][1] * p.y + H[0][2];
+        var y = H[1][0] * p.x + H[1][1] * p.y + H[1][2];
+        var w = H[2][0] * p.x + H[2][1] * p.y + H[2][2];
+        if (Math.abs(w) < 1e-12) w = 1e-12;
+        return { x: x / w, y: y / w };
+      }
+
+      function solve8(M, b) {
+        var n = 8;
+        var a = M.map(function (row, i) {
+          return row.concat([b[i]]);
+        });
+        var i, j, k;
+        for (i = 0; i < n; i++) {
+          var piv = i;
+          for (k = i + 1; k < n; k++) {
+            if (Math.abs(a[k][i]) > Math.abs(a[piv][i])) piv = k;
+          }
+          if (Math.abs(a[piv][i]) < 1e-10) return null;
+          var tmp = a[i];
+          a[i] = a[piv];
+          a[piv] = tmp;
+          var div = a[i][i];
+          for (j = i; j <= n; j++) a[i][j] /= div;
+          for (k = 0; k < n; k++) {
+            if (k === i) continue;
+            var f = a[k][i];
+            for (j = i; j <= n; j++) a[k][j] -= f * a[i][j];
+          }
+        }
+        return a.map(function (row) {
+          return row[n];
+        });
+      }
+
+      function homographyFromQuads(src, dst) {
+        var M = [];
+        var b = [];
+        var i;
+        for (i = 0; i < 4; i++) {
+          var u = src[i].x;
+          var v = src[i].y;
+          var x = dst[i].x;
+          var y = dst[i].y;
+          M.push([-u, -v, -1, 0, 0, 0, u * x, v * x]);
+          b.push(-x);
+          M.push([0, 0, 0, -u, -v, -1, u * y, v * y]);
+          b.push(-y);
+        }
+        var h8 = solve8(M, b);
+        if (!h8) return null;
+        return [
+          [h8[0], h8[1], h8[2]],
+          [h8[3], h8[4], h8[5]],
+          [h8[6], h8[7], 1]
+        ];
+      }
+
+      function det3(H) {
+        return (
+          H[0][0] * (H[1][1] * H[2][2] - H[1][2] * H[2][1]) -
+          H[0][1] * (H[1][0] * H[2][2] - H[1][2] * H[2][0]) +
+          H[0][2] * (H[1][0] * H[2][1] - H[1][1] * H[2][0])
+        );
+      }
+
+      function generateData(outlierRatio, seed) {
+        var rnd = mulberry32(seed);
+        var H = trueH();
+        var nIn = 55;
+        var nOut = Math.round((nIn * outlierRatio) / Math.max(1e-6, 1 - outlierRatio));
+        var src = [];
+        var dst = [];
+        var isTrue = [];
+        var i;
+        for (i = 0; i < nIn; i++) {
+          var p = { x: 10 + rnd() * 180, y: 10 + rnd() * 130 };
+          var q = applyH(H, p);
+          q.x += (rnd() - 0.5) * 2.0;
+          q.y += (rnd() - 0.5) * 2.0;
+          src.push(p);
+          dst.push(q);
+          isTrue.push(true);
+        }
+        for (i = 0; i < nOut; i++) {
+          src.push({ x: rnd() * 200, y: rnd() * 150 });
+          dst.push({ x: rnd() * 240, y: rnd() * 180 });
+          isTrue.push(false);
+        }
+        // shuffle
+        for (i = src.length - 1; i > 0; i--) {
+          var j = Math.floor(rnd() * (i + 1));
+          var ts = src[i];
+          src[i] = src[j];
+          src[j] = ts;
+          var td = dst[i];
+          dst[i] = dst[j];
+          dst[j] = td;
+          var tb = isTrue[i];
+          isTrue[i] = isTrue[j];
+          isTrue[j] = tb;
+        }
+        return { src: src, dst: dst, isTrue: isTrue, Htrue: H };
+      }
+
+      function ransac(src, dst, thresh, maxIters, seed) {
+        var rnd = mulberry32(seed + 99);
+        var bestH = null;
+        var bestMask = null;
+        var bestCount = -1;
+        var n = src.length;
+        var it;
+        for (it = 0; it < maxIters; it++) {
+          var idx = [];
+          while (idx.length < 4) {
+            var k = Math.floor(rnd() * n);
+            if (idx.indexOf(k) < 0) idx.push(k);
+          }
+          var H = homographyFromQuads(
+            [src[idx[0]], src[idx[1]], src[idx[2]], src[idx[3]]],
+            [dst[idx[0]], dst[idx[1]], dst[idx[2]], dst[idx[3]]]
+          );
+          if (!H || !isFinite(det3(H)) || Math.abs(det3(H)) < 1e-8) continue;
+          var mask = [];
+          var count = 0;
+          var i;
+          for (i = 0; i < n; i++) {
+            var pred = applyH(H, src[i]);
+            var dx = pred.x - dst[i].x;
+            var dy = pred.y - dst[i].y;
+            var ok = Math.sqrt(dx * dx + dy * dy) < thresh;
+            mask.push(ok);
+            if (ok) count++;
+          }
+          if (count > bestCount) {
+            bestCount = count;
+            bestH = H;
+            bestMask = mask;
+          }
+        }
+        return { H: bestH, mask: bestMask || src.map(function () { return false; }), count: Math.max(0, bestCount) };
+      }
+
+      function meanGridError(H, Htrue) {
+        if (!H) return Infinity;
+        var xs = [40, 100, 160];
+        var ys = [40, 100];
+        var sum = 0;
+        var n = 0;
+        var i, j;
+        for (i = 0; i < xs.length; i++) {
+          for (j = 0; j < ys.length; j++) {
+            var p = { x: xs[i], y: ys[j] };
+            var a = applyH(Htrue, p);
+            var b = applyH(H, p);
+            var dx = a.x - b.x;
+            var dy = a.y - b.y;
+            sum += Math.sqrt(dx * dx + dy * dy);
+            n++;
+          }
+        }
+        return sum / n;
+      }
+
+      function surface() {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var width = canvas.clientWidth || 640;
+        var height = canvas.clientHeight || 380;
+        var pw = Math.round(width * dpr);
+        var ph = Math.round(height * dpr);
+        if (canvas.width !== pw || canvas.height !== ph) {
+          canvas.width = pw;
+          canvas.height = ph;
+        }
+        var ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(0, 0, width, height);
+        return { ctx: ctx, width: width, height: height };
+      }
+
+      function drawPanel(ctx, x0, y0, w, h, title, points, mask, which) {
+        ctx.save();
+        ctx.strokeStyle = "#2a241c";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x0, y0, w, h);
+        ctx.fillStyle = INK;
+        ctx.font = "14px sans-serif";
+        ctx.fillText(title, x0 + 8, y0 - 8);
+
+        var i;
+        for (i = 0; i < points.length; i++) {
+          var p = points[i];
+          var px = x0 + 10 + (p.x / 250) * (w - 20);
+          var py = y0 + 10 + (p.y / 190) * (h - 20);
+          var inl = mask[i];
+          if (inl) {
+            ctx.fillStyle = TEAL;
+            ctx.beginPath();
+            ctx.arc(px, py, 3.2, 0, Math.PI * 2);
+            ctx.fill();
+          } else {
+            ctx.strokeStyle = WAVE;
+            ctx.lineWidth = 1.4;
+            ctx.beginPath();
+            ctx.moveTo(px - 3, py - 3);
+            ctx.lineTo(px + 3, py + 3);
+            ctx.moveTo(px + 3, py - 3);
+            ctx.lineTo(px - 3, py + 3);
+            ctx.stroke();
+          }
+        }
+        ctx.restore();
+      }
+
+      function redraw() {
+        var s = surface();
+        var ctx = s.ctx;
+        var mid = s.width / 2;
+        var panelW = mid - 28;
+        var panelH = s.height - 56;
+        var y0 = 28;
+        drawPanel(ctx, 16, y0, panelW, panelH, "图 A", state.src, state.mask, "src");
+        drawPanel(ctx, mid + 8, y0, panelW, panelH, "图 B", state.dst, state.mask, "dst");
+
+        // legend
+        ctx.fillStyle = TEAL;
+        ctx.beginPath();
+        ctx.arc(20, s.height - 14, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = INK;
+        ctx.font = "12px sans-serif";
+        ctx.fillText("内点", 30, s.height - 10);
+        ctx.strokeStyle = WAVE;
+        ctx.beginPath();
+        ctx.moveTo(78, s.height - 18);
+        ctx.lineTo(86, s.height - 10);
+        ctx.moveTo(86, s.height - 18);
+        ctx.lineTo(78, s.height - 10);
+        ctx.stroke();
+        ctx.fillStyle = INK;
+        ctx.fillText("外点", 92, s.height - 10);
+      }
+
+      function syncLabels() {
+        ratioOut.textContent = ratioEl.value + "%";
+        threshOut.textContent = Number(threshEl.value).toFixed(1) + " px";
+        itersOut.textContent = itersEl.value;
+      }
+
+      function run() {
+        syncLabels();
+        var ratio = Number(ratioEl.value) / 100;
+        var thresh = Number(threshEl.value);
+        var iters = Number(itersEl.value);
+        state.seed += 1;
+        var data = generateData(ratio, state.seed);
+        state.src = data.src;
+        state.dst = data.dst;
+        state.isTrue = data.isTrue;
+        var result = ransac(data.src, data.dst, thresh, iters, state.seed);
+        state.H = result.H;
+        state.mask = result.mask;
+        var tp = 0;
+        var fp = 0;
+        var i;
+        for (i = 0; i < state.mask.length; i++) {
+          if (state.mask[i] && state.isTrue[i]) tp++;
+          if (state.mask[i] && !state.isTrue[i]) fp++;
+        }
+        var err = meanGridError(state.H, data.Htrue);
+        var errText = isFinite(err) ? err.toFixed(2) + " px" : "失败";
+        readout.textContent =
+          "内点 " +
+          result.count +
+          "/" +
+          state.src.length +
+          "　真内点命中 " +
+          tp +
+          "　误收外点 " +
+          fp +
+          "　与真 H 格点偏差 ≈ " +
+          errText +
+          "。外点多或迭代太少时，偏差会跳。";
+        redraw();
+      }
+
+      function reset() {
+        ratioEl.value = 35;
+        threshEl.value = 3;
+        itersEl.value = 200;
+        state.seed = 7;
+        run();
+      }
+
+      ratioEl.addEventListener("input", run);
+      threshEl.addEventListener("input", run);
+      itersEl.addEventListener("input", run);
+      document.getElementById("ransac-run").addEventListener("click", run);
+      document.getElementById("ransac-reset").addEventListener("click", reset);
+      window.addEventListener("resize", redraw);
+      reset();
+    })();
+  </script>
+</body>
+</html>

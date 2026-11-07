@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 9 篇 · 投影模型：平面、柱面、球面</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        拼接与防抖 · 图像视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="08-pipeline.html">第 8 篇</a>
+        <a href="09-projection.html" aria-current="page">第 9 篇</a>
+        <a href="10-blend.html">第 10 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 9 篇 · 全景几何 · 约 50 分钟</p>
+    <h1>投影模型：平面、柱面、球面</h1>
+    <p class="lede">第 3–8 篇把两图、多图用单应性「贴」到同一张平面画布。原地转圈拍一圈时，这块平面会被撑破。这一篇换三种「收纳盒」——平面、柱面、球面——看同一组照片在不同盒子里长什么样，并学会按场景选型。</p>
+    <div class="meta">
+      <span class="pill">先读：第 3 篇单应性、第 8 篇流水线（概念）</span>
+      <span class="pill">下一篇：接缝与融合</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#why">现象：广角环拍，平面为何撑破</a></li>
+        <li><a href="#ray">共同语言：像素先变成射线</a></li>
+        <li><a href="#planar">平面投影：贴在玻璃板上</a></li>
+        <li><a href="#cyl">柱面投影：贴在灯笼纸筒上再剪开</a></li>
+        <li><a href="#sph">球面投影：贴在地球仪上再摊开</a></li>
+        <li><a href="#compare">同一组图三种对照</a></li>
+        <li><a href="#pick">选型表</a></li>
+        <li><a href="#try">交互：投影类型与焦距</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改这里</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="why">现象：广角环拍，平面为何撑破</h2>
+    <p>你站在原地，只转动身体，从左到右拍五张。每张之间大概转 20°～40°。若仍用第 3 篇的做法——估一张单应性 H，把所有图 warp 到<strong>同一块平面画布</strong>——中间几张往往还好看，两侧却会：</p>
+    <ul>
+      <li>楼房被横向拉得很扁、很宽；</li>
+      <li>重叠区对不齐，像橡皮筋越扯越松；</li>
+      <li>再转接近 90°，有的点理论上要映到「无穷远」，画布根本装不下。</li>
+    </ul>
+    <p>这不是匹配坏了，而是<strong>收纳方式</strong>选错了：平面适合「大家差不多朝同一个方向看一块墙」；不适合「绕自己转一圈」。</p>
+    <figure>
+      <img src="assets/figures/ch09_planar_blowup.png" alt="小转角平面可用，大转角边缘被撑到无穷远">
+      <figcaption>图 9-1　左：转角小，射线打在投影平面上间距还均匀。中：转角大，等角度的射线在平面上间距按 tan 爆炸。右：拼到平面画布时，两侧格子被拉扁。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>记忆口诀：平面坐标大致是 <code>f · tan(θ)</code>。θ 从 0° 到 80°，tan 从 0 飙到约 5.7；再靠近 90° 就冲向无穷。柱面用的是 <code>f · θ</code>（弧度），80° 只是约 1.4，永远有限。</p>
+    </div>
+
+    <h2 id="ray">共同语言：像素先变成射线</h2>
+    <p>三种投影表面差别很大，底层却共用一步：把图像上的像素想成「从相机光心射出的一条射线」。</p>
+    <p>设图像宽高为 W、H，主点（光心投影）约在图像中心 <code>(cx, cy)</code>，焦距是 <code>f</code>（单位：像素）。像素 <code>(x, y)</code> 对应的方向可以写成：</p>
+    <p class="formula">X = (x − cx) / f，　Y = (y − cy) / f，　Z = 1</p>
+    <p>白话：</p>
+    <ul>
+      <li><code>f</code> 越大，同样像素偏移对应的角度越小——像望远；</li>
+      <li><code>f</code> 越小，同样像素偏移对应的角度越大——像广角；</li>
+      <li>还不懂标定也没关系：全景里常把 <code>f</code> 当成一个可调的「虚拟焦距」。</li>
+    </ul>
+    <p>有了射线 <code>(X, Y, Z)</code>，三种投影只是问：这条射线<strong>先打到什么形状的屏上</strong>，再把屏<strong>展开成一张矩形图</strong>。</p>
+    <figure>
+      <img src="assets/figures/ch09_formulas.png" alt="平面柱面球面公式白话板">
+      <figcaption>图 9-2　先统一成射线，再落到平面 / 柱面 / 球面。公式不怕记不全，先抓住「打到什么形状」。</figcaption>
+    </figure>
+
+    <h2 id="planar">平面投影：贴在玻璃板上</h2>
+    <p>平面投影就是普通针孔相机在做的事：在相机前方放一块与光轴垂直的玻璃板（平面 <code>Z = f</code>），光线穿过玻璃留下痕迹。</p>
+    <p class="formula">x′ = f · X / Z + cx，　y′ = f · Y / Z + cy</p>
+    <p>若射线已经是归一化的 <code>Z=1</code>，就是 <code>x′ = f X + cx</code>。换用水平角 θ 来说：</p>
+    <p class="formula">x′ ≈ f · tan(θ) + cx</p>
+    <p><strong>优点</strong>：直线还是直线；看海报、墙面、桌面最自然；和第 3 篇单应性无缝衔接——两平面之间正好一个 H。</p>
+    <p><strong>缺点</strong>：水平视场一大，边缘按 tan 拉伸；环拍超过大约 60°～90° 总跨度就难受；接近 180° 时数学上直接炸掉。</p>
+    <div class="callout note">
+      <p>所以「平面拼接」不是错，而是适用范围窄：场景近似共面、相机运动近似纯旋转且转角不大，或你只拼两三张广角不大的图。</p>
+    </div>
+
+    <h2 id="cyl">柱面投影：贴在灯笼纸筒上再剪开</h2>
+    <p>想象相机在圆柱轴心。光线先打到圆柱内壁，再把圆柱沿一条竖缝剪开、铺成矩形——得到<strong>柱面展开图</strong>。</p>
+    <figure>
+      <img src="assets/figures/ch09_cylinder_idea.png" alt="柱面投影俯视与展开示意">
+      <figcaption>图 9-3　俯视看：等角度的射线在圆周上间距相等；展开后横坐标正比于水平角 θ，不会像 tan 那样爆炸。</figcaption>
+    </figure>
+    <p>公式（半径取为焦距 f）：</p>
+    <p class="formula">θ = atan2(X, Z)，　h = Y / √(X² + Z²)</p>
+    <p class="formula">x′ = f · θ + cx，　y′ = f · h + cy</p>
+    <p>白话拆开：</p>
+    <ul>
+      <li><strong>θ</strong>：水平转了多少弧度。展开图的横坐标就是「角度尺」；</li>
+      <li><strong>h</strong>：竖直方向仍按「高度 / 水平距离」缩放，所以<strong>竖直线在柱面展开后仍近似竖直</strong>；</li>
+      <li>水平 360° 对应宽度约 <code>2πf</code> 像素——有限、可算。</li>
+    </ul>
+    <p><strong>典型用途</strong>：手机「扫一圈」全景、户外水平环拍、大多数消费级全景 App。上下抬头不多时，柱面几乎是默认答案。</p>
+    <p><strong>代价</strong>：本来透视里笔直的水平线，在柱面展开里可能变弯；若你先柱面投影，再错误地用「平面单应」去硬拼，仍会残留弯曲误差——正确做法是在柱面坐标里用更接近平移/旋转的模型对齐。</p>
+
+    <h2 id="sph">球面投影：贴在地球仪上再摊开</h2>
+    <p>柱面管水平，不管「猛抬头、猛低头」。若还要收进天空和脚边，就换球面：光线打到单位球，再按经度 θ、纬度 φ 摊成矩形（类似世界地图）。</p>
+    <figure>
+      <img src="assets/figures/ch09_sphere_idea.png" alt="球面投影与经纬展开示意">
+      <figcaption>图 9-4　球面能同时覆盖水平与俯仰。展开后两极附近会像地图一样被拉宽——这是经纬展开的代价，不是算错了。</figcaption>
+    </figure>
+    <p>公式：</p>
+    <p class="formula">θ = atan2(X, Z)，　φ = arcsin(Y / ‖r‖)</p>
+    <p class="formula">x′ = f · θ + cx，　y′ = f · φ + cy</p>
+    <p>和柱面比：横坐标仍是经度；纵坐标改成纬度角 φ，不再用线性的 h。于是<strong>上下大转角也能进同一张展开图</strong>，但竖直方向的直线也可能变弯，四角收得更明显。</p>
+    <p><strong>典型用途</strong>：接近 360×180 的全天球、含大幅俯仰的多行拍摄、VR 全景底图。</p>
+
+    <h2 id="compare">同一组图三种对照</h2>
+    <p>脚本造了一条横向超宽「街景」，裁出五张重叠的环拍照片 V0…V4。后面三种投影都用这一组，只换「收纳盒」。</p>
+    <figure>
+      <img src="assets/figures/ch09_source_views_fig.png" alt="五张环拍源图并排">
+      <figcaption>图 9-5　同一组源图。字母地标帮助你在三种结果里认「同一栋楼」。原始条带见 <code>assets/images/ch09_pano_strip.png</code>。</figcaption>
+    </figure>
+    <p>先看<strong>单张</strong>网格图被三种投影「重新采样」后的形状，建立肌肉记忆：</p>
+    <figure>
+      <img src="assets/figures/ch09_single_warp_fig.png" alt="单张图的平面柱面球面形状">
+      <figcaption>图 9-6　左：平面＝原透视，直线仍直。中：柱面，水平线弯、竖线仍直。右：球面，横竖都可能弯，四角更收。</figcaption>
+    </figure>
+    <p>再看<strong>五张一起</strong>叠到各自画布上的示意（未做精细接缝，只为比几何）：</p>
+    <figure>
+      <img src="assets/figures/ch09_compare_three_fig.png" alt="同一组图三种投影拼接对照">
+      <figcaption>图 9-7　上：平面——两侧更容易被拉开。中：柱面——水平跨度更均匀。下：球面——在柱面基础上继续按纬度收上下。完整像素图：<code>assets/images/ch09_compare_three.png</code>。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>对照时请盯两件事：（1）两侧楼宽是否被拉爆；（2）路面与楼边是直还是弯。选型就是在「保直线」和「保大视场」之间做取舍。</p>
+    </div>
+
+    <h2 id="pick">选型表</h2>
+    <figure>
+      <img src="assets/figures/ch09_selection.png" alt="投影选型速查表">
+      <figcaption>图 9-8　场景 → 投影的速查。下面表格与图一致，方便复制记忆。</figcaption>
+    </figure>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>场景</th>
+            <th>推荐</th>
+            <th>为什么</th>
+            <th>别踩的坑</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>墙 / 海报 / 桌面（近似一个平面）</td>
+            <td>平面 + 单应 H</td>
+            <td>本来就是平面到平面</td>
+            <td>近景大平移仍有视差</td>
+          </tr>
+          <tr>
+            <td>原地水平环拍（抬头不多）</td>
+            <td>柱面</td>
+            <td>水平角均匀展开，两侧不爆炸</td>
+            <td>把柱面结果再当平面硬估 H</td>
+          </tr>
+          <tr>
+            <td>含大幅俯仰或接近整球</td>
+            <td>球面</td>
+            <td>经纬度覆盖上下</td>
+            <td>两极拉伸大；存储与交互更重</td>
+          </tr>
+          <tr>
+            <td>手机「扫一圈」日常全景</td>
+            <td>多数用柱面</td>
+            <td>实现简单、观感够用</td>
+            <td>手平移过大 → 视差鬼影（第 11 篇）</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="try">交互：投影类型与焦距</h2>
+    <p>下方画布在模拟「相机看前方网格房间」。切换投影类型，或拖动焦距滑块：</p>
+    <ul>
+      <li><strong>f 变大</strong>：像望远，弯曲变弱，视野变窄；</li>
+      <li><strong>f 变小</strong>：像广角，柱面/球面的收边更明显；</li>
+      <li>看清：柱面保竖线，球面连竖线也弯。</li>
+    </ul>
+    <div class="playground">
+      <canvas id="proj-demo" class="demo tall" width="820" height="380" aria-label="投影类型与焦距交互"></canvas>
+      <div class="actions">
+        <button type="button" class="primary" data-mode="planar" id="btn-planar">平面</button>
+        <button type="button" data-mode="cylindrical" id="btn-cyl">柱面</button>
+        <button type="button" data-mode="spherical" id="btn-sph">球面</button>
+      </div>
+      <div class="controls">
+        <label for="focal">焦距 f</label>
+        <input id="focal" type="range" min="80" max="420" step="2" value="180">
+        <output id="focal-out" for="focal">180</output>
+      </div>
+      <p class="readout" id="proj-readout" aria-live="polite"></p>
+    </div>
+
+    <h2 id="run">运行脚本</h2>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <pre class="terminal"><code>source .venv/bin/activate   # 若尚未激活
+MPLCONFIGDIR=/tmp/mpl-cache python code/ch09_projection.py</code></pre>
+      <p>会写出 <code>ch09_planar_blowup.png</code>、<code>ch09_cylinder_idea.png</code>、<code>ch09_sphere_idea.png</code>、<code>ch09_compare_three*.png</code> 等课文对照图，以及你的 <code>ch09_my_*.png</code>。结尾打印「自检通过」。</p>
+    </div>
+
+    <h2 id="edit">改这里</h2>
+    <p>打开 <a href="code/ch09_projection.py"><code>code/ch09_projection.py</code></a>，只改文件顶部两个参数：</p>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>把 <code>MY_FOCAL</code> 从 220 改成 120，再运行。广角感更强，柱面/球面相对平面的「收边」更明显；看 <code>ch09_my_compare.png</code>。</li>
+        <li>把 <code>MY_FOCAL</code> 改成 360（更望远）。三种投影差异变小——转角不大时平面也能凑合，和课文开头的结论对上。</li>
+        <li>把 <code>MY_YAW_DEG</code> 从 38 改成 55。相邻帧水平夹角变大，平面画布两侧更容易被拉开；柱面仍相对稳。</li>
+        <li>故意设 <code>MY_YAW_DEG = 5</code>。几乎不转头时，三种结果会非常接近——说明「投影选型」是被视场推着走的，不是永远越复杂越好。</li>
+      </ol>
+    </div>
+
+    <h2 id="check">自测</h2>
+    <details class="quiz">
+      <summary>1. 为什么说平面投影在接近 90° 水平角时会「撑破」？</summary>
+      <p>平面横坐标大致正比于 tan(θ)。θ→90° 时 tan→∞，点被映到无穷远，有限画布装不下，边缘严重拉伸。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. 柱面投影的横坐标对应什么几何量？竖直线为什么还比较直？</summary>
+      <p>横坐标对应水平角 θ（再乘焦距 f）。竖直方向按 h = Y/√(X²+Z²) 映射，不混入水平角，所以竖直线在展开图里仍近似竖直。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. 什么时候必须优先考虑球面而不是柱面？</summary>
+      <p>拍摄含大幅俯仰（抬头看天、低头看地），或要覆盖接近整球视野时。柱面上下能力有限。</p>
+    </details>
+    <details class="quiz">
+      <summary>4. 拼一张墙上的海报，还需要柱面吗？</summary>
+      <p>一般不需要。场景近似平面时，平面 + 单应性最合适，还能保住直线。柱面反而可能把直线弄弯。</p>
+    </details>
+    <details class="quiz">
+      <summary>5. 焦距 f 调大，交互画布上弯曲通常变强还是变弱？</summary>
+      <p>变弱。f 大相当于望远，同样像素范围对应更小角度，柱面/球面相对平面的差异减小。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>投影只解决「放到哪张画布」。重叠区仍可能露缝、重影、亮度跳变。下一篇讲接缝寻找与图像融合：羽化、多频段、图割找缝。</p>
+    <p><a href="10-blend.html">第 10 篇 · 接缝寻找与图像融合</a>（待写）</p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="08-pipeline.html">上一篇</a>
+      <a href="index.html">目录</a>
+      <a href="10-blend.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+      var MUTED = "#5c564c";
+      var INK = "#1c1915";
+      var mode = "cylindrical";
+      var canvas = document.getElementById("proj-demo");
+      var focalEl = document.getElementById("focal");
+      var focalOut = document.getElementById("focal-out");
+      var readout = document.getElementById("proj-readout");
+      var buttons = {
+        planar: document.getElementById("btn-planar"),
+        cylindrical: document.getElementById("btn-cyl"),
+        spherical: document.getElementById("btn-sph")
+      };
+
+      function setMode(m) {
+        mode = m;
+        Object.keys(buttons).forEach(function (k) {
+          buttons[k].classList.toggle("primary", k === m);
+        });
+        draw();
+      }
+
+      buttons.planar.addEventListener("click", function () { setMode("planar"); });
+      buttons.cylindrical.addEventListener("click", function () { setMode("cylindrical"); });
+      buttons.spherical.addEventListener("click", function () { setMode("spherical"); });
+      focalEl.addEventListener("input", draw);
+
+      function surface(canvas) {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var width = canvas.clientWidth || 640;
+        var height = canvas.clientHeight || 380;
+        var pw = Math.round(width * dpr);
+        var ph = Math.round(height * dpr);
+        if (canvas.width !== pw || canvas.height !== ph) {
+          canvas.width = pw;
+          canvas.height = ph;
+        }
+        var ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(0, 0, width, height);
+        return { ctx: ctx, width: width, height: height };
+      }
+
+      // 透视像素 → 三种画布坐标（与课文公式一致）
+      function projectPoint(x, y, cx, cy, f, m) {
+        var X = (x - cx) / f;
+        var Y = (y - cy) / f;
+        var Z = 1;
+        if (m === "planar") {
+          return { x: f * X / Z + cx, y: f * Y / Z + cy };
+        }
+        if (m === "cylindrical") {
+          var theta = Math.atan2(X, Z);
+          var h = Y / Math.hypot(X, Z);
+          return { x: f * theta + cx, y: f * h + cy };
+        }
+        // spherical
+        var r = Math.sqrt(X * X + Y * Y + Z * Z);
+        var th = Math.atan2(X, Z);
+        var phi = Math.asin(Math.max(-1, Math.min(1, Y / r)));
+        return { x: f * th + cx, y: f * phi + cy };
+      }
+
+      function drawGrid(ctx, width, height, f, m) {
+        var cx = width / 2;
+        var cy = height / 2;
+        // 源「透视」采样范围：比画布略大的虚拟成像平面
+        var srcW = width;
+        var srcH = height;
+        var step = 24;
+
+        function mapLine(pts) {
+          ctx.beginPath();
+          for (var i = 0; i < pts.length; i++) {
+            var p = projectPoint(pts[i].x, pts[i].y, cx, cy, f, m);
+            // 把投影结果从「以光心为原点的展开」再平移回画布中心可视区
+            var dx = p.x;
+            var dy = p.y;
+            if (i === 0) ctx.moveTo(dx, dy);
+            else ctx.lineTo(dx, dy);
+          }
+          ctx.stroke();
+        }
+
+        // 天空 / 地面底色带
+        ctx.fillStyle = "#ece4d6";
+        ctx.fillRect(0, 0, width, cy);
+        ctx.fillStyle = "#ddd2c2";
+        ctx.fillRect(0, cy, width, height - cy);
+
+        // 竖线
+        ctx.strokeStyle = "rgba(92,86,76,0.45)";
+        ctx.lineWidth = 1;
+        for (var x = 0; x <= srcW; x += step) {
+          var col = [];
+          for (var y = 0; y <= srcH; y += 6) col.push({ x: x, y: y });
+          mapLine(col);
+        }
+        // 横线
+        for (var y2 = 0; y2 <= srcH; y2 += step) {
+          var row = [];
+          for (var x2 = 0; x2 <= srcW; x2 += 6) row.push({ x: x2, y: y2 });
+          mapLine(row);
+        }
+
+        // 中央十字（青色）
+        ctx.strokeStyle = TEAL;
+        ctx.lineWidth = 2;
+        mapLine([{ x: cx, y: 16 }, { x: cx, y: height - 16 }]);
+        mapLine([{ x: 16, y: cy }, { x: width - 16, y: cy }]);
+
+        // 三栋「楼」轮廓
+        var buildings = [
+          { x0: cx - 130, x1: cx - 80, top: cy - 110, color: WAVE },
+          { x0: cx - 30, x1: cx + 30, top: cy - 140, color: TEAL },
+          { x0: cx + 80, x1: cx + 125, top: cy - 100, color: WAVE }
+        ];
+        buildings.forEach(function (b) {
+          ctx.strokeStyle = b.color;
+          ctx.lineWidth = 2.2;
+          mapLine([
+            { x: b.x0, y: cy },
+            { x: b.x0, y: b.top },
+            { x: b.x1, y: b.top },
+            { x: b.x1, y: cy }
+          ]);
+        });
+      }
+
+      function draw() {
+        var f = Number(focalEl.value);
+        focalOut.textContent = String(f);
+        var S = surface(canvas);
+        drawGrid(S.ctx, S.width, S.height, f, mode);
+
+        var tip = {
+          planar: "平面：直线仍直；f 再小，边缘也不会按柱/球那样收，但广角环拍时真实相机会在画布外「装不下」。",
+          cylindrical: "柱面：竖线大致仍直，水平线变弯；f 越小弯曲越明显。适合水平环拍。",
+          spherical: "球面：横竖都可能弯，四角更收；适合还要抬头低头的大视场。"
+        };
+        readout.textContent = "当前：" + ({ planar: "平面", cylindrical: "柱面", spherical: "球面" })[mode] +
+          "，f = " + f + " px。" + tip[mode];
+      }
+
+      window.addEventListener("resize", draw);
+      setMode("cylindrical");
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 5 篇 · 角点与特征点</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        拼接与防抖 · 图像视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="04-calibration.html">第 4 篇</a>
+        <a href="05-features.html" aria-current="page">第 5 篇</a>
+        <a href="06-descriptors.html">第 6 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 5 篇 · 找路标 · 约 50 分钟</p>
+    <h1>角点与特征点</h1>
+    <p class="lede">要把两张照片对上，先得在每张图上找到「好认的地方」。白墙、天空几乎处处一样，计算机分不清；窗角、砖缝、路牌尖角则像路标。本篇用滑动窗口讲清「为什么是角点」，再碰 Harris、FAST，以及 OpenCV 里怎么画点。</p>
+    <div class="meta">
+      <span class="pill">先读：第 0～2 篇（坐标与变换直觉）</span>
+      <span class="pill">第 6 篇会给这些点「指纹」做匹配</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#why">为什么平坦处难匹配</a></li>
+        <li><a href="#harris">Harris：两个方向都变化</a></li>
+        <li><a href="#fast">FAST：圆周上比亮度</a></li>
+        <li><a href="#draw">在图上画出特征点</a></li>
+        <li><a href="#robust">尺度、模糊、亮度</a></li>
+        <li><a href="#opencv">OpenCV 三种入口</a></li>
+        <li><a href="#try">滑块看点数变化</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改这里</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="why">为什么平坦处难匹配</h2>
+    <p>想象你蒙着眼，手指摸一块光滑白墙：左右挪一点，感觉几乎一样——「我在哪」说不清。摸到墙角或窗框交叉处，两个方向手感都变了，一下子就能定位。</p>
+    <p>计算机也差不多。它在像素上放一个<strong>小窗口</strong>（比如 5×5），把窗口往四面八方轻轻平移，看窗口里灰度差了多少。常用一种叫 SSD（平方差之和）的量：差得越大，说明这个位置「对位移越敏感」。</p>
+    <ul>
+      <li><strong>平坦区</strong>（天空、白墙）：怎么滑，窗口内容几乎不变 → 差≈0 → 没法当路标。</li>
+      <li><strong>边缘</strong>（一条直线边界）：垂直于边滑动时变化大，沿着边滑动时几乎不变 → 只能定「在哪条线上」，定不准线上的位置。</li>
+      <li><strong>角点</strong>（两条边交叉、棋盘格交点）：水平和竖直（或任意两个方向）滑动都会大变 → 位置钉得死 → 适合匹配与跟踪。</li>
+    </ul>
+    <figure>
+      <img src="assets/figures/ch05_flat_vs_corner.png" alt="平坦、边缘、角点的滑动窗口示意">
+      <figcaption>图 5-1　橙框是原窗口，青虚线是平移后的窗口。平坦：两框几乎一样；边缘：只在一个方向「对不上」；角点：两个方向都对不上——这正是我们想要的。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>拼接流水线里，先「检测特征点」，再「描述 + 匹配」（第 6 篇），最后才估单应 / 叠图。检测器选错地方，后面再聪明也救不回来——平坦误检、纹理太弱，都会让匹配崩。</p>
+    </div>
+
+    <h2 id="harris">Harris：两个方向都变化</h2>
+    <p>Harris 角点检测把上面的直觉做成一个分数 <strong>R</strong>。白话版可以记成三句话：</p>
+    <ol>
+      <li>在窗口里估计「灰度沿 x 变多少、沿 y 变多少」（梯度）。</li>
+      <li>把这些变化整理成两个主方向上的「强度」——像椭圆的长短轴。</li>
+      <li>若<strong>两个方向都强</strong> → R 大 → 角点；只有一个方向强 → 像边缘；两个都弱 → 平坦。</li>
+    </ol>
+    <p class="formula">R 大 ⇔ 窗口里「横竖都变」</p>
+    <p>不必死记特征方程。看到文献里的 λ₁、λ₂（两个特征值）时，就把它们想成「两个主方向的变化强度」即可。OpenCV 的 <code>cornerHarris</code> 直接给出每个像素的 R；再取阈值、做非极大抑制，就得到离散的角点列表。</p>
+    <figure>
+      <img src="assets/figures/ch05_harris_idea.png" alt="Harris 两方向变化示意">
+      <figcaption>图 5-2　中心橙点是候选位置；箭头粗细表示该方向灰度变化强不强。只有最右「两个方向都粗」才判为角点。</figcaption>
+    </figure>
+    <p>和 Harris 很近的还有 <strong>Shi-Tomasi</strong>（OpenCV 里 <code>goodFeaturesToTrack</code> 的默认）：它更看「两个强度里较弱的那个」——弱的那个也够大，才收这个点。实践里它常比原始 Harris 更稳，所以跟踪、拼图入门首选它。</p>
+
+    <h2 id="fast">FAST：圆周上比亮度</h2>
+    <p>视频里要实时找很多点时，Harris 的梯度矩阵有点「重」。<strong>FAST</strong>（Features from Accelerated Segment Test）换了个极简单的规则：</p>
+    <ol>
+      <li>看候选像素 p 的灰度。</li>
+      <li>在以 p 为圆心、半径约 3 的圆周上取 16 个像素。</li>
+      <li>若其中有一段<strong>连续 ≥9 个</strong>都比 p「明显更亮」或「明显更暗」（差超过阈值 t），就认为 p 是角点。</li>
+    </ol>
+    <p>实现上还会用「先抽查第 1、5、9、13 号点」之类的加速：四个里凑不够亮/暗，直接淘汰。所以它名字里有 Accelerated——专为速度设计，手机端、实时稳像里很常见（ORB 检测器底子就是 FAST）。</p>
+    <figure>
+      <img src="assets/figures/ch05_fast_idea.png" alt="FAST 圆周十六点示意">
+      <figcaption>图 5-3　青绿点示意「比中心明显更亮」的连续弧段。阈值 t 越大，要求反差越强，点数越少。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>FAST 对噪声敏感一些，通常会开非极大抑制，并常和模糊/金字塔一起用。本篇先建立「圆周比亮度」的画面；第 6 篇 ORB 会再碰到它。</p>
+    </div>
+
+    <h2 id="draw">在图上画出特征点</h2>
+    <p>先看一张「刻意设计」的合成几何图：大灰块（平坦）、黑白竖边（边缘）、L 形拐角、棋盘格、圆盘。</p>
+    <figure>
+      <img src="assets/figures/ch05_synthetic_corners.png" alt="三种检测器在合成几何图上的结果">
+      <figcaption>图 5-4　左：Shi-Tomasi；中：Harris；右：FAST。平坦灰块几乎无点；L 拐角与棋盘交点被点亮。圆边缘上可能有零星点，但不如尖角集中。</figcaption>
+    </figure>
+    <p>再看一张更像「街景照片」的真实感合成图：楼房窗户、砖墙、路牌、树冠。检测器会自然聚到窗户四角、砖缝交叉、路牌矩形角——天空和大片路面仍然很空。</p>
+    <figure>
+      <img src="assets/figures/ch05_realistic_features.png" alt="真实感场景上的特征点">
+      <figcaption>图 5-5　右图用 <code>goodFeaturesToTrack</code>。注意：点多不等于点好——重复纹理（密窗）会产生很多「长得像」的点，给后面匹配埋坑，第 6～7 篇再治。</figcaption>
+    </figure>
+
+    <h2 id="robust">尺度、模糊、亮度</h2>
+    <p>真实拍摄里，同一栋楼可能：远近不同（尺度）、对焦发糊、曝光变暗。检测器若对这类变化过敏，两张图上的「路标集合」对不齐，匹配就会惨。</p>
+    <figure>
+      <img src="assets/figures/ch05_scale_blur_bright.png" alt="尺度模糊亮度对特征点数量的影响">
+      <figcaption>图 5-6　同一参数下的对照。缩小再放大＝丢高频细节，角变钝，点数掉；强模糊同理；整体变暗时，若对比度还够，点数未必崩，但阈值敏感时可能变少。</figcaption>
+    </figure>
+    <ul>
+      <li><strong>尺度</strong>：小目标上的角，在低分辨率里可能「糊成一团」不再是角。多尺度检测（图像金字塔）是常见对策，ORB/SIFT 会做。</li>
+      <li><strong>模糊</strong>：梯度被抹平，Harris/FAST 响应整体变弱 → 阈值不变时点数下降。</li>
+      <li><strong>亮度</strong>：全局乘一个系数，有的方法较稳，有的依赖绝对阈值（如 FAST 的 t）会漂。拍摄时尽量曝光接近，后期也能做一点归一化。</li>
+    </ul>
+
+    <h2 id="opencv">OpenCV 三种入口</h2>
+    <p>入门够用的三套 API：</p>
+    <pre><code># 1) Shi-Tomasi（推荐入门）
+pts = cv2.goodFeaturesToTrack(
+    gray, maxCorners=100, qualityLevel=0.01, minDistance=10
+)
+
+# 2) Harris 响应图 → 自己取阈值
+resp = cv2.cornerHarris(np.float32(gray), blockSize=2, ksize=3, k=0.04)
+# resp &gt; 某阈值 的像素即候选角点
+
+# 3) FAST
+fast = cv2.FastFeatureDetector_create(threshold=25)
+kps = fast.detect(gray, None)</code></pre>
+    <p><code>goodFeaturesToTrack</code> 返回形状大致是 <code>(N, 1, 2)</code> 的坐标；Harris 返回整幅响应图；FAST 返回关键Point 列表（含坐标与响应）。画点时统一成 (x, y) 再 <code>cv2.circle</code> 即可。</p>
+    <figure>
+      <img src="assets/figures/ch05_opencv_compare.png" alt="三种 OpenCV 检测器对照">
+      <figcaption>图 5-7　同一场景、各自调到「看起来合理」的参数。FAST 往往更密、更快；Shi-Tomasi 分布更「挑」；Harris 阈值要自己拧。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>参数手感：<code>qualityLevel</code> 越小点越多；<code>minDistance</code> 越大点越疏；FAST 的 <code>threshold</code> 越大越挑剔。先保证「角上有点、天上没点」，再微调数量。</p>
+    </div>
+
+    <h2 id="try">滑块看点数变化</h2>
+    <p>下方画布是一张迷你合成场景（灰块、竖边、L 角、棋盘）。左侧可调<strong>响应阈值</strong>（越高越挑剔），右侧可调<strong>模糊半径</strong>。底层用简化版「两方向梯度都要够大」的角点打分——和 Harris 同一直觉，方便在浏览器里即时重算。</p>
+    <div class="playground">
+      <canvas id="feat-demo" class="demo tall" width="820" height="360" aria-label="阈值与模糊对特征点数量的影响"></canvas>
+      <div class="controls">
+        <label for="feat-thr">阈值</label>
+        <input id="feat-thr" type="range" min="5" max="60" step="1" value="18">
+        <output id="feat-thr-out" for="feat-thr">18</output>
+        <label for="feat-blur">模糊半径</label>
+        <input id="feat-blur" type="range" min="0" max="8" step="1" value="0">
+        <output id="feat-blur-out" for="feat-blur">0 px</output>
+      </div>
+      <div class="actions">
+        <button type="button" class="primary" id="feat-reset">恢复默认</button>
+      </div>
+      <p class="readout" id="feat-readout" aria-live="polite"></p>
+    </div>
+    <p>建议：先把模糊拉到 0，慢慢提高阈值，看棋盘与 L 角是否还在、灰块是否始终空着；再固定中等阈值，加大模糊，观察点数塌缩——这和图 5-6 是同一现象。</p>
+
+    <h2 id="run">运行脚本</h2>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <pre class="terminal"><code>source .venv/bin/activate   # 若尚未激活
+python code/ch05_features.py</code></pre>
+      <p>终端应出现「自检通过」，并写出 <code>ch05_flat_vs_corner.png</code>、<code>ch05_harris_idea.png</code>、<code>ch05_fast_idea.png</code>、<code>ch05_synthetic_corners.png</code>、<code>ch05_realistic_features.png</code>、<code>ch05_scale_blur_bright.png</code>、<code>ch05_opencv_compare.png</code>，以及你的 <code>ch05_my_features.png</code>。</p>
+    </div>
+
+    <h2 id="edit">改这里</h2>
+    <p>打开 <a href="code/ch05_features.py"><code>code/ch05_features.py</code></a>，改顶部「改这里」四块参数，只影响 <code>ch05_my_features.png</code>。</p>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>把 <code>MY_QUALITY</code> 从 <code>0.01</code> 改成 <code>0.05</code>，点数应变少，且更挑「尖」的角。</li>
+        <li>把 <code>MY_MIN_DISTANCE</code> 提到 <code>25</code>，点会彼此拉开，密窗上不再挤成一团。</li>
+        <li>设 <code>MY_BLUR = 9</code>（奇数），再跑：角被抹圆，点数明显下降。</li>
+        <li>把 <code>MY_MAX_CORNERS</code> 降到 <code>20</code>：只保留响应最强的一批——适合后面做「精简匹配」的直觉实验。</li>
+      </ol>
+    </div>
+
+    <h2 id="check">自测</h2>
+    <details class="quiz">
+      <summary>1. 为什么白墙、天空上几乎检不出可靠特征点？</summary>
+      <p>小窗口怎么平移，灰度几乎不变，缺少「独特位置」信号；两个方向变化都弱，Harris/FAST 响应都上不去。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. Harris 眼里，「边缘」和「角点」差在哪？</summary>
+      <p>边缘：主要只有一个方向灰度变化大。角点：两个主方向都变化大，响应 R 才高。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. FAST 判断角点时，在看什么？</summary>
+      <p>圆心像素与圆周上一圈像素的亮度差：若有一段连续足够多的点都明显更亮或更暗，就判为角点。</p>
+    </details>
+    <details class="quiz">
+      <summary>4. 强模糊后，同一套检测参数下点数通常怎样？为什么？</summary>
+      <p>通常变少。模糊抹平梯度/对比度，角点响应变弱，过不了原来的阈值。</p>
+    </details>
+    <details class="quiz">
+      <summary>5. 入门想快速在灰度图上取一批角点，OpenCV 优先试哪个函数？</summary>
+      <p><code>cv2.goodFeaturesToTrack</code>（默认 Shi-Tomasi）。Harris 与 FAST 也可，但前者要自己拧响应阈值，后者对噪声和阈值更敏感。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>检测只给出「在哪」。下一篇给每个点做<strong>描述子</strong>（指纹），再用暴力匹配 / Lowe 比率把两图的点对起来，并专门盯误匹配。</p>
+    <p><a href="06-descriptors.html">第 6 篇 · 描述子与特征匹配</a>（待写）</p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="04-calibration.html">上一篇</a>
+      <a href="index.html">目录</a>
+      <a href="06-descriptors.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+      var MUTED = "#5c564c";
+      var canvas = document.getElementById("feat-demo");
+      var thrEl = document.getElementById("feat-thr");
+      var blurEl = document.getElementById("feat-blur");
+      var thrOut = document.getElementById("feat-thr-out");
+      var blurOut = document.getElementById("feat-blur-out");
+      var readout = document.getElementById("feat-readout");
+      var resetBtn = document.getElementById("feat-reset");
+
+      var baseGray = null;
+      var baseW = 0;
+      var baseH = 0;
+
+      function buildScene(w, h) {
+        var off = document.createElement("canvas");
+        off.width = w;
+        off.height = h;
+        var ctx = off.getContext("2d");
+        ctx.fillStyle = "#f7f3eb";
+        ctx.fillRect(0, 0, w, h);
+
+        // 平坦灰块
+        ctx.fillStyle = "#cfc8bc";
+        ctx.fillRect(16, 16, Math.floor(w * 0.28), Math.floor(h * 0.36));
+
+        // 竖直边缘
+        var ex = Math.floor(w * 0.42);
+        ctx.fillStyle = "#2a2824";
+        ctx.fillRect(ex, 20, Math.floor(w * 0.12), Math.floor(h * 0.38));
+        ctx.fillStyle = "#ebe4d8";
+        ctx.fillRect(ex + Math.floor(w * 0.12), 20, Math.floor(w * 0.12), Math.floor(h * 0.38));
+
+        // L 形
+        ctx.fillStyle = "#4a6f96";
+        var lx = 24;
+        var ly = Math.floor(h * 0.52);
+        ctx.fillRect(lx, ly, 90, 100);
+        ctx.fillRect(lx + 90, ly + 50, 70, 50);
+
+        // 棋盘
+        var cell = 16;
+        var ox = Math.floor(w * 0.55);
+        var oy = Math.floor(h * 0.52);
+        for (var j = 0; j < 5; j++) {
+          for (var i = 0; i < 8; i++) {
+            if ((i + j) % 2 === 0) {
+              ctx.fillStyle = "#33302c";
+              ctx.fillRect(ox + i * cell, oy + j * cell, cell, cell);
+            }
+          }
+        }
+
+        // 圆
+        ctx.fillStyle = "#5a8f7a";
+        ctx.beginPath();
+        ctx.arc(Math.floor(w * 0.88), Math.floor(h * 0.28), 34, 0, Math.PI * 2);
+        ctx.fill();
+
+        var img = ctx.getImageData(0, 0, w, h);
+        var gray = new Float32Array(w * h);
+        for (var p = 0; p < w * h; p++) {
+          var o = p * 4;
+          gray[p] = 0.299 * img.data[o] + 0.587 * img.data[o + 1] + 0.114 * img.data[o + 2];
+        }
+        return { gray: gray, w: w, h: h, rgb: img };
+      }
+
+      function boxBlur(src, w, h, radius) {
+        if (radius <= 0) return src;
+        var out = new Float32Array(src.length);
+        var r = radius;
+        var tmp = new Float32Array(src.length);
+        // 水平
+        for (var y = 0; y < h; y++) {
+          for (var x = 0; x < w; x++) {
+            var sum = 0;
+            var n = 0;
+            for (var k = -r; k <= r; k++) {
+              var xx = x + k;
+              if (xx < 0 || xx >= w) continue;
+              sum += src[y * w + xx];
+              n++;
+            }
+            tmp[y * w + x] = sum / n;
+          }
+        }
+        // 竖直
+        for (var y2 = 0; y2 < h; y2++) {
+          for (var x2 = 0; x2 < w; x2++) {
+            var sum2 = 0;
+            var n2 = 0;
+            for (var k2 = -r; k2 <= r; k2++) {
+              var yy = y2 + k2;
+              if (yy < 0 || yy >= h) continue;
+              sum2 += tmp[yy * w + x2];
+              n2++;
+            }
+            out[y2 * w + x2] = sum2 / n2;
+          }
+        }
+        return out;
+      }
+
+      function detectCorners(gray, w, h, thr) {
+        // 简化 Harris 直觉：|Ix| 与 |Iy| 都要够大；再做网格非极大抑制
+        var score = new Float32Array(w * h);
+        var maxS = 0;
+        for (var y = 2; y < h - 2; y++) {
+          for (var x = 2; x < w - 2; x++) {
+            var i = y * w + x;
+            var ix = gray[i + 1] - gray[i - 1];
+            var iy = gray[i + w] - gray[i - w];
+            var ax = Math.abs(ix);
+            var ay = Math.abs(iy);
+            var s = Math.min(ax, ay); // 弱方向也要强 → 角
+            // 抑制纯边缘：两方向差太大则降权
+            var bal = 1 - Math.abs(ax - ay) / (ax + ay + 1e-3);
+            s = s * bal;
+            score[i] = s;
+            if (s > maxS) maxS = s;
+          }
+        }
+        var cut = (thr / 100) * maxS;
+        var pts = [];
+        var step = 6;
+        for (var y0 = 2; y0 < h - 2; y0 += step) {
+          for (var x0 = 2; x0 < w - 2; x0 += step) {
+            var best = 0;
+            var bx = x0;
+            var by = y0;
+            for (var dy = 0; dy < step; dy++) {
+              for (var dx = 0; dx < step; dx++) {
+                var yy = y0 + dy;
+                var xx = x0 + dx;
+                if (yy >= h - 2 || xx >= w - 2) continue;
+                var v = score[yy * w + xx];
+                if (v > best) {
+                  best = v;
+                  bx = xx;
+                  by = yy;
+                }
+              }
+            }
+            if (best >= cut && best > 4) pts.push({ x: bx, y: by, s: best });
+          }
+        }
+        return pts;
+      }
+
+      function ensureBase() {
+        var cssW = canvas.clientWidth || 640;
+        var cssH = canvas.clientHeight || 360;
+        if (!baseGray || baseW !== Math.round(cssW) || baseH !== Math.round(cssH)) {
+          baseW = Math.round(cssW);
+          baseH = Math.round(cssH);
+          var built = buildScene(baseW, baseH);
+          baseGray = built.gray;
+        }
+      }
+
+      function draw() {
+        ensureBase();
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var width = baseW;
+        var height = baseH;
+        var pw = Math.round(width * dpr);
+        var ph = Math.round(height * dpr);
+        if (canvas.width !== pw || canvas.height !== ph) {
+          canvas.width = pw;
+          canvas.height = ph;
+        }
+        var ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+        var thr = Number(thrEl.value);
+        var blur = Number(blurEl.value);
+        thrOut.textContent = String(thr);
+        blurOut.textContent = blur + " px";
+
+        var gray = boxBlur(baseGray, width, height, blur);
+        // 背景：把灰度画回去
+        var img = ctx.createImageData(width, height);
+        for (var i = 0; i < gray.length; i++) {
+          var g = Math.max(0, Math.min(255, gray[i]));
+          var o = i * 4;
+          img.data[o] = g;
+          img.data[o + 1] = g;
+          img.data[o + 2] = g;
+          img.data[o + 3] = 255;
+        }
+        // 先放到临时 canvas 再缩放画，避免 createImageData 尺寸问题
+        var tmp = document.createElement("canvas");
+        tmp.width = width;
+        tmp.height = height;
+        tmp.getContext("2d").putImageData(img, 0, 0);
+        ctx.drawImage(tmp, 0, 0);
+
+        var pts = detectCorners(gray, width, height, thr);
+        for (var k = 0; k < pts.length; k++) {
+          var p = pts[k];
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 3.2, 0, Math.PI * 2);
+          ctx.fillStyle = WAVE;
+          ctx.fill();
+          ctx.lineWidth = 1;
+          ctx.strokeStyle = "#1c1915";
+          ctx.stroke();
+        }
+
+        readout.textContent =
+          "检出 " + pts.length + " 个点 · 阈值=" + thr + " · 模糊=" + blur +
+          "px。平坦灰块应几乎为空；提高阈值或加大模糊，棋盘与 L 角上的点会变少。";
+      }
+
+      thrEl.addEventListener("input", draw);
+      blurEl.addEventListener("input", draw);
+      resetBtn.addEventListener("click", function () {
+        thrEl.value = "18";
+        blurEl.value = "0";
+        draw();
+      });
+      window.addEventListener("resize", function () {
+        baseGray = null;
+        draw();
+      });
+      draw();
+    })();
+  </script>
+</body>
+</html>

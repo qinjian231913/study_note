@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 22 篇 · 陀螺仪与 IMU：角速度如何变成姿态</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        拼接与防抖 · 图像视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="21-rolling-shutter.html">第 21 篇</a>
+        <a href="22-gyro-imu.html" aria-current="page">第 22 篇</a>
+        <a href="23-gyro-eis.html">第 23 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 22 篇 · 重点 · 陀螺与 IMU · 约 70 分钟</p>
+    <h1>陀螺仪与 IMU：角速度如何变成姿态</h1>
+    <p class="lede">手机防抖、运动相机 EIS，常常不只靠画面特征——机身里还有一颗小传感器在报「我正在转多快」。本篇从零讲清：三轴角速度是什么、怎样积分成姿态、为什么会漂、采样为何比视频密、时间戳如何对齐到曝光中心，以及互补滤波怎样用加速度计「拉一把」。</p>
+    <div class="meta">
+      <span class="pill">重点篇：交互与失败案例更多</span>
+      <span class="pill">先读：第 21 篇 RS 有帮助，不强制</span>
+      <span class="pill">下一篇用本篇姿态做 EIS</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#feel">先建立直觉：速度 vs 路程</a></li>
+        <li><a href="#axes">三轴角速度：测的是「转多快」</a></li>
+        <li><a href="#integrate">积分得姿态，以及为什么会漂</a></li>
+        <li><a href="#try-drift">交互：拧零偏，看姿态溜走</a></li>
+        <li><a href="#rate">采样率 vs 视频帧率</a></li>
+        <li><a href="#align">时间戳与曝光中心对齐</a></li>
+        <li><a href="#curve">读一份合成 IMU 日志</a></li>
+        <li><a href="#comp">互补滤波：陀螺 + 加速度计</a></li>
+        <li><a href="#try-comp">交互：调 α，看谁更信谁</a></li>
+        <li><a href="#fail">常见失败案例</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改这里</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="feel">先建立直觉：速度 vs 路程</h2>
+    <p>开车时，仪表盘告诉你<strong>速度</strong>（公里/小时）。想知道「开了多远」，要把速度按时间累加——这叫<strong>积分</strong>。</p>
+    <p>陀螺仪也一样：它直接给你的是<strong>角速度</strong>（每秒转多少度），不是「手机现在朝哪」。朝向（姿态）= 把角速度按时间积起来。</p>
+    <p class="formula">姿态变化 ≈ 角速度 × 时间间隔</p>
+    <p>白话：这一小段时间里，如果你以 30°/s 转了 0.01 秒，姿态大约多转了 0.3°。把每一小段加起来，就得到整条姿态曲线。</p>
+    <figure>
+      <img src="assets/figures/ch22_pipeline.png" alt="从角速度到曝光中心姿态的流程">
+      <figcaption>图 22-1　本篇一条线：角速度 → 积分成姿态 →（有漂移要处理）→ 对齐到每一帧的曝光中心。下一篇再把姿态差变成像素补偿。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p><strong>IMU</strong> = Inertial Measurement Unit（惯性测量单元）。手机里常见组合：<strong>陀螺仪</strong>（角速度）+ <strong>加速度计</strong>（线加速度 / 重力方向）+ 有时还有磁力计。本篇主角是陀螺；加速度计用来讲「如何纠正漂移」。</p>
+    </div>
+
+    <h2 id="axes">三轴角速度：测的是「转多快」</h2>
+    <p>手机可以绕三个互相垂直的轴转。行业里常叫：</p>
+    <ul>
+      <li><strong>roll（滚转）</strong>：绕「镜头朝前」那根轴转——像方向盘左右拧，画面会倾斜。</li>
+      <li><strong>pitch（俯仰）</strong>：抬头 / 低头。</li>
+      <li><strong>yaw（偏航）</strong>：左右转头看风景——手持视频里最常见的晃动之一。</li>
+    </ul>
+    <p>陀螺仪每个采样时刻输出三个数：ω<sub>x</sub>, ω<sub>y</sub>, ω<sub>z</sub>。单位常见是 <strong>rad/s</strong>（弧度/秒）或 <strong>°/s</strong>（度/秒）。换算：1 rad/s ≈ 57.3 °/s。</p>
+    <figure>
+      <img src="assets/figures/ch22_axes.png" alt="手机三轴角速度示意">
+      <figcaption>图 22-2　记住一句话：陀螺报的是「此刻转多快」，不是指南针。指南针式的「绝对朝向」要靠积分（或再融合别的传感器）才能得到。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>不同手机的轴定义、传感器坐标系与相机坐标系可能不一致。工程上要做<strong>外参标定</strong>（陀螺 → 相机）。本篇先假定轴已经对齐，专注「角速度 → 姿态」这条数学直觉。</p>
+    </div>
+
+    <h2 id="integrate">积分得姿态，以及为什么会漂</h2>
+    <p>离散时间上，最朴素的做法（本篇脚本用的梯形积分）：</p>
+    <p class="formula">θ[k] = θ[k−1] + ½ · (ω[k] + ω[k−1]) · Δt</p>
+    <p>白话：用相邻两次角速度的平均，乘上间隔 Δt，加到上一时刻的角度上。</p>
+    <p>理想世界里，这样能还原出真实转动。真实陀螺有两件麻烦事：</p>
+    <ol>
+      <li><strong>噪声</strong>：读数在真值附近抖。短时间积分还能忍；长时间会慢慢散开。</li>
+      <li><strong>零偏（bias）</strong>：静止时读数不是精确的 0，而是有一个慢慢变的小常数偏置。若偏置是 0.5 °/s，积分 10 秒就会「凭空」转出约 5°——画面上就是稳像越用越歪。</li>
+    </ol>
+    <p class="formula">常值零偏 → 姿态误差 ≈ bias × 时间　（斜坡漂移）</p>
+    <figure>
+      <img src="assets/figures/ch22_integrate_drift.png" alt="理想积分与带零偏积分对比">
+      <figcaption>图 22-3　左：真 yaw、理想积分、带零偏积分。右：误差近似随时间线性上涨——斜率就是零偏量级。这就是「陀螺短期准、长期会漂」的来源。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p><strong>本篇简化</strong>：把 roll / pitch / yaw 当成三个近似独立的角度来积分，方便入门。真三维姿态要用旋转矩阵或四元数，避免大角度时轴耦合。下一篇做 EIS 时会再碰到「用旋转去 warp 像素」。</p>
+    </div>
+
+    <h2 id="try-drift">交互：拧零偏，看姿态溜走</h2>
+    <p>下面用一段合成的 yaw 角速度（含一次「甩头」）。左侧滑块模拟陀螺零偏；右侧对比真姿态与积分姿态。把零偏拧大，看橙色曲线怎样慢慢离开青色真值。</p>
+    <div class="playground">
+      <canvas id="drift-demo" class="demo tall" width="820" height="360" aria-label="零偏导致姿态漂移示意"></canvas>
+      <div class="controls">
+        <label for="bias">yaw 零偏 (°/s)</label>
+        <input id="bias" type="range" min="-2" max="2" step="0.05" value="0.6">
+        <output id="bias-out" for="bias">0.60 °/s</output>
+        <label for="noise">噪声强度</label>
+        <input id="noise" type="range" min="0" max="1.5" step="0.05" value="0.2">
+        <output id="noise-out" for="noise">0.20</output>
+      </div>
+      <div class="actions">
+        <button type="button" class="primary" id="drift-zero">零偏清零</button>
+        <button type="button" id="drift-reset">恢复示例</button>
+      </div>
+      <p class="readout" id="drift-readout" aria-live="polite"></p>
+    </div>
+
+    <h2 id="rate">采样率 vs 视频帧率</h2>
+    <p>视频常见 <strong>30 fps</strong>：大约每 33 ms 来一帧。手机 IMU 常是 <strong>200–1000 Hz</strong>：每 1–5 ms 就记一次角速度。</p>
+    <p>这意味着：两帧画面之间，手机其实已经转了很多「小步」。若只用帧与帧之间的视觉跟踪，会错过中间细节；有陀螺时，可以把帧间转动积得更细——这对快速甩动、以及第 21 篇的 Rolling Shutter（一行一行的时间差）特别有用。</p>
+    <figure>
+      <img src="assets/figures/ch22_sample_vs_frame.png" alt="IMU 密采样与视频帧时刻对照">
+      <figcaption>图 22-4　甩头段放大：青色密曲线是 IMU；橙色竖线/圆点是 30 fps 帧时刻。帧与帧之间，角速度早已剧烈变化。</figcaption>
+    </figure>
+
+    <h2 id="align">时间戳与曝光中心对齐</h2>
+    <p>防抖时我们要问的不是「IMU 第 k 个样本对应哪一帧」，而是：</p>
+    <p><strong>这一帧图像，大致代表哪个时刻的相机朝向？</strong></p>
+    <p>卷帘快门下，每一行曝光时刻还不同（第 21 篇）。即便先简化成「整帧一个时刻」，也通常不取「帧数据到达 CPU 的时间」，而取<strong>曝光中心</strong>：</p>
+    <p class="formula">t<sub>align</sub> = t<sub>打开快门</sub> + 曝光时长 / 2</p>
+    <p>白话：曝光 10 ms，就认为这帧代表「打开后 5 ms」那一刻的姿态。再到 IMU 时间轴上，用最近邻或线性插值取出该时刻的 ω，并积分到对应姿态。</p>
+    <figure>
+      <img src="assets/figures/ch22_timestamp_align.png" alt="曝光窗口与曝光中心对齐示意">
+      <figcaption>图 22-5　橙色条是一帧的曝光窗口；对齐点取中点。密竖线是 IMU 样本。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p><strong>三个常见坑</strong>：① 相机时钟和 IMU 时钟不是同一个零点——存在固定或缓慢变化的<strong>延迟</strong>，需要标定；② 把「编码时间戳 / 文件写入时间」当成曝光时间；③ 单位搞混（µs、ns、秒）。对不齐时，稳像会「越补越晃」或出现固定相位的残差。</p>
+    </div>
+
+    <h3>小交互：曝光中心落在哪</h3>
+    <div class="playground">
+      <canvas id="align-demo" class="demo" width="820" height="220" aria-label="曝光中心对齐示意"></canvas>
+      <div class="controls">
+        <label for="exp">曝光时长 (ms)</label>
+        <input id="exp" type="range" min="1" max="33" step="1" value="10">
+        <output id="exp-out" for="exp">10 ms</output>
+        <label for="delay">IMU 相对延迟 (ms)</label>
+        <input id="delay" type="range" min="-15" max="15" step="1" value="0">
+        <output id="delay-out" for="delay">0 ms</output>
+      </div>
+      <p class="readout" id="align-readout" aria-live="polite"></p>
+    </div>
+
+    <h2 id="curve">读一份合成 IMU 日志</h2>
+    <p>真实项目里，IMU 往往是 CSV / 二进制流。本篇脚本生成了一份<strong>合成</strong>日志，方便你在没有真机数据时也能练手：</p>
+    <ul>
+      <li><a href="assets/images/ch22_imu_log.csv"><code>assets/images/ch22_imu_log.csv</code></a>：约 4 秒、200 Hz，含慢摇、手抖、一次甩头</li>
+      <li><a href="assets/images/ch22_imu_log_readme.txt"><code>ch22_imu_log_readme.txt</code></a>：字段说明</li>
+    </ul>
+    <p>字段：</p>
+    <div class="table-scroll">
+      <table>
+        <caption>表 22-1　合成日志列</caption>
+        <thead>
+          <tr><th>列名</th><th>含义</th><th>单位</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>timestamp_us</code></td><td>时间戳（任意起点，用差值算 Δt）</td><td>微秒</td></tr>
+          <tr><td><code>gx_rad_s</code> 等</td><td>三轴角速度</td><td>rad/s</td></tr>
+          <tr><td><code>ax_g</code> 等</td><td>三轴加速度（合成重力投影）</td><td>g</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <figure>
+      <img src="assets/figures/ch22_omega_curve.png" alt="三轴角速度与真姿态曲线">
+      <figcaption>图 22-6　上：测量角速度（含噪声与零偏）。下：脚本内部的「真姿态」——真机没有这行标准答案，这里只为对照。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch22_log_preview.png" alt="从 CSV 读入后的前几秒角速度">
+      <figcaption>图 22-7　脚本把 CSV 读回来再画前 80 个样本，确认「写日志 → 读日志 → 画曲线」闭环通了。</figcaption>
+    </figure>
+    <pre><code>import csv, numpy as np
+
+# 读时间戳（µs）→ 换成从 0 开始的秒
+# ω 若是 rad/s，画图时常乘 180/π 变成 °/s
+# Δt[i] = (ts[i] - ts[i-1]) * 1e-6
+# θ[i] = θ[i-1] + 0.5 * (ω[i] + ω[i-1]) * Δt[i]</code></pre>
+
+    <h2 id="comp">互补滤波：陀螺 + 加速度计</h2>
+    <p>只信陀螺：短时间跟手，长时间漂移。加速度计在<strong>近似静止或匀速</strong>时，主要感受重力，可以从重力方向估出 roll / pitch（抬头低头、左右倾斜）。但加速度计对震动很敏感，直接当姿态会抖；而且<strong>估不出 yaw</strong>（绕竖直轴转时重力方向不变）。</p>
+    <p><strong>互补滤波</strong>的直觉（一阶版）：</p>
+    <p class="formula">θ = α · (θ<sub>上次</sub> + ω·Δt) + (1−α) · θ<sub>加速度计</sub></p>
+    <ul>
+      <li>α 接近 1（如 0.98）：大部分信陀螺积分，只轻轻用加速度计「拉回」漂移。</li>
+      <li>α 太小：更贴加速度计，长期不漂，但走路震动会灌进姿态。</li>
+    </ul>
+    <p>白话：陀螺负责「刚才突然转了多少」；加速度计负责「别让角度永远歪着」。两者一个管高频、一个管低频，所以叫「互补」。</p>
+    <figure>
+      <img src="assets/figures/ch22_complementary.png" alt="纯陀螺积分与互补滤波误差对比">
+      <figcaption>图 22-8　pitch：纯积分会漂；加速度计单独用会抖；互补滤波把误差按住。yaw 仍只能靠陀螺（或再加磁力计 / 视觉）。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>手机量产稳像里还会见到 Kalman / 更复杂的视觉-惯性融合。互补滤波不是终点，但是理解「为什么要融合」的最好脚手架。</p>
+    </div>
+
+    <h2 id="try-comp">交互：调 α，看谁更信谁</h2>
+    <p>青色虚线：真 pitch。橙色：纯陀螺积分（带零偏）。绿色：互补滤波。拖动 α，观察绿色如何在「跟手」和「不漂」之间权衡。</p>
+    <div class="playground">
+      <canvas id="comp-demo" class="demo tall" width="820" height="360" aria-label="互补滤波 alpha 示意"></canvas>
+      <div class="controls">
+        <label for="alpha">α（越大越信陀螺）</label>
+        <input id="alpha" type="range" min="0.80" max="0.999" step="0.001" value="0.980">
+        <output id="alpha-out" for="alpha">0.980</output>
+        <label for="pbias">pitch 零偏 (°/s)</label>
+        <input id="pbias" type="range" min="0" max="1.5" step="0.05" value="0.45">
+        <output id="pbias-out" for="pbias">0.45 °/s</output>
+      </div>
+      <div class="actions">
+        <button type="button" class="primary" id="comp-reset">恢复默认</button>
+      </div>
+      <p class="readout" id="comp-readout" aria-live="polite"></p>
+    </div>
+
+    <h2 id="fail">常见失败案例</h2>
+    <ul>
+      <li><strong>单位错了</strong>：日志是 rad/s，你按 °/s 积分 → 姿态大约差 57 倍，稳像直接炸。</li>
+      <li><strong>Δt 用成帧间隔</strong>：把 33 ms 套在每个 IMU 样本上 → 积分爆炸。必须用相邻 IMU 时间戳之差。</li>
+      <li><strong>延迟未标定</strong>：姿态总是「早半拍或晚半拍」，画面补偿与真实抖动反相。</li>
+      <li><strong>剧烈线加速时死信加速度计</strong>：刹车、蹦跳时重力方向估歪，α 又偏小 → pitch/roll 被拉去错误位置。</li>
+      <li><strong>只平滑 yaw 却忘了 RS</strong>：整帧一个姿态，竖线仍可能斜（第 21、23 篇）。</li>
+    </ul>
+
+    <h2 id="run">运行脚本</h2>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <pre class="terminal"><code>source .venv/bin/activate
+MPLCONFIGDIR=/tmp/mpl-cache python code/ch22_gyro_imu.py</code></pre>
+      <p>终端应打印「自检通过」以及多条「已保存」。会写出：</p>
+      <ul>
+        <li>对照图：<code>ch22_pipeline.png</code>、<code>ch22_axes.png</code>、<code>ch22_omega_curve.png</code>、<code>ch22_integrate_drift.png</code>、<code>ch22_sample_vs_frame.png</code>、<code>ch22_timestamp_align.png</code>、<code>ch22_complementary.png</code>、<code>ch22_log_preview.png</code></li>
+        <li>合成日志：<code>assets/images/ch22_imu_log.csv</code> + <code>ch22_imu_log_readme.txt</code></li>
+        <li>你的图：<code>ch22_my_attitude.png</code>、<code>ch22_my_exposure.png</code>（只跟顶部「改这里」）</li>
+      </ul>
+    </div>
+
+    <h2 id="edit">改这里</h2>
+    <p>打开 <a href="code/ch22_gyro_imu.py"><code>code/ch22_gyro_imu.py</code></a> 顶部：</p>
+    <pre><code>GYRO_BIAS_DEG = 0.8   # yaw 方向额外零偏（°/s）
+COMP_ALPHA = 0.98     # 互补滤波信陀螺的比例
+EXPOSURE_MS = 10.0    # 曝光时长，影响曝光中心说明图</code></pre>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>把 <code>GYRO_BIAS_DEG</code> 改成 <code>0.0</code>，再改成 <code>2.0</code>，对比 <code>ch22_my_attitude.png</code> 上半幅 yaw 漂移。</li>
+        <li>把 <code>COMP_ALPHA</code> 改成 <code>0.90</code> 与 <code>0.995</code>，看下半幅 pitch：太小会更跟加速度计抖，太大则纠正变慢。</li>
+        <li>把 <code>EXPOSURE_MS</code> 改成 <code>20</code>，看 <code>ch22_my_exposure.png</code> 里对齐时刻是否变成「打开 + 10 ms」。</li>
+      </ol>
+    </div>
+
+    <h2 id="check">自测</h2>
+    <p>先自己答，再展开。脚本里另有 ≥5 项数值自检。</p>
+    <details class="quiz">
+      <summary>1. 陀螺仪直接输出的是姿态角，还是角速度？</summary>
+      <p>角速度（°/s 或 rad/s）。姿态要靠积分（或融合）得到。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. 若陀螺有 +0.5 °/s 的常值零偏，积分 20 秒，姿态大约会多转多少？</summary>
+      <p>约 0.5 × 20 = 10°。常值零偏 → 误差随时间近似线性增长。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. 为什么 IMU 采样率通常远高于视频帧率？</summary>
+      <p>帧间手机仍在转；密采样才能细积分，也便于按行做 RS 校正。30 fps 约 33 ms 一帧，200 Hz IMU 约每 5 ms 一次。</p>
+    </details>
+    <details class="quiz">
+      <summary>4. 一帧曝光 12 ms，打开时刻为 t₀。常用的对齐时刻是？</summary>
+      <p>曝光中心 t₀ + 6 ms。再到 IMU 时间轴上取值 / 插值。</p>
+    </details>
+    <details class="quiz">
+      <summary>5. 互补滤波里 α 接近 1 时，更相信谁？加速度计单独能估 yaw 吗？</summary>
+      <p>更信陀螺积分。加速度计靠重力只能帮 roll/pitch，估不出绕竖直轴的 yaw。</p>
+    </details>
+    <details class="quiz">
+      <summary>6. 日志里角速度是 rad/s，你却按 °/s 去乘 Δt，会发生什么？</summary>
+      <p>积分结果大约偏 180/π ≈ 57 倍，姿态完全不可用。先统一单位再算。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>有了「每一时刻相机朝哪」，下一篇把姿态序列变成像素 warp：相对平滑目标姿态的差 → 陀螺辅助 EIS，并初步用行时间 + 角速度减轻 Rolling Shutter 斜切。</p>
+    <p><a href="23-gyro-eis.html">第 23 篇 · 陀螺仪电子防抖与 RS 校正</a>（待写）</p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="21-rolling-shutter.html">上一篇</a>
+      <a href="index.html">目录</a>
+      <a href="23-gyro-eis.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+      var MUTED = "#5c564c";
+      var INK = "#1c1915";
+
+      function trueYaw(t) {
+        return 8 * Math.sin(0.7 * t) + 1.2 * Math.sin(18 * t) +
+          25 * Math.exp(-Math.pow(t - 2.05, 2) / (2 * 0.08 * 0.08));
+      }
+      function trueWy(t) {
+        return 8 * 0.7 * Math.cos(0.7 * t) + 1.2 * 18 * Math.cos(18 * t) +
+          25 * (-(t - 2.05) / (0.08 * 0.08)) *
+          Math.exp(-Math.pow(t - 2.05, 2) / (2 * 0.08 * 0.08));
+      }
+      function truePitch(t) {
+        return 3 * Math.sin(0.9 * t + 0.4) + 0.6 * Math.sin(22 * t);
+      }
+      function trueWp(t) {
+        return 3 * 0.9 * Math.cos(0.9 * t + 0.4) + 0.6 * 22 * Math.cos(22 * t);
+      }
+
+      function mulberry32(a) {
+        return function () {
+          var t = (a += 0x6d2b79f5);
+          t = Math.imul(t ^ (t >>> 15), t | 1);
+          t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+          return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        };
+      }
+
+      // -------- 漂移交互 --------
+      (function () {
+        var canvas = document.getElementById("drift-demo");
+        var ctx = canvas.getContext("2d");
+        var biasEl = document.getElementById("bias");
+        var noiseEl = document.getElementById("noise");
+        var biasOut = document.getElementById("bias-out");
+        var noiseOut = document.getElementById("noise-out");
+        var readout = document.getElementById("drift-readout");
+
+        function simulate(bias, noiseAmp) {
+          var n = 400;
+          var T = 4.0;
+          var t = [];
+          var yawTrue = [];
+          var yawInt = [];
+          var rng = mulberry32(42);
+          var y = trueYaw(0);
+          for (var i = 0; i < n; i++) {
+            var ti = (i / (n - 1)) * T;
+            t.push(ti);
+            yawTrue.push(trueYaw(ti));
+            if (i === 0) {
+              yawInt.push(y);
+              continue;
+            }
+            var dt = t[i] - t[i - 1];
+            var w0 = trueWy(t[i - 1]) + bias + (rng() - 0.5) * 2 * noiseAmp;
+            var w1 = trueWy(t[i]) + bias + (rng() - 0.5) * 2 * noiseAmp;
+            y = y + 0.5 * (w0 + w1) * dt;
+            yawInt.push(y);
+          }
+          return { t: t, yawTrue: yawTrue, yawInt: yawInt };
+        }
+
+        function draw() {
+          var bias = parseFloat(biasEl.value);
+          var noiseAmp = parseFloat(noiseEl.value);
+          biasOut.textContent = bias.toFixed(2) + " °/s";
+          noiseOut.textContent = noiseAmp.toFixed(2);
+          var data = simulate(bias, noiseAmp);
+          var W = canvas.clientWidth || 820;
+          var H = canvas.clientHeight || 360;
+          canvas.width = W * (window.devicePixelRatio || 1);
+          canvas.height = H * (window.devicePixelRatio || 1);
+          ctx.setTransform(window.devicePixelRatio || 1, 0, 0, window.devicePixelRatio || 1, 0, 0);
+          ctx.clearRect(0, 0, W, H);
+          ctx.fillStyle = "#fffdf8";
+          ctx.fillRect(0, 0, W, H);
+
+          var pad = { l: 48, r: 16, t: 28, b: 36 };
+          var all = data.yawTrue.concat(data.yawInt);
+          var ymin = Math.min.apply(null, all) - 2;
+          var ymax = Math.max.apply(null, all) + 2;
+          function x(ti) { return pad.l + (ti / 4) * (W - pad.l - pad.r); }
+          function y(v) { return pad.t + (1 - (v - ymin) / (ymax - ymin)) * (H - pad.t - pad.b); }
+
+          ctx.strokeStyle = "#e6dccb";
+          ctx.lineWidth = 1;
+          for (var g = 0; g <= 4; g++) {
+            var yy = pad.t + g * (H - pad.t - pad.b) / 4;
+            ctx.beginPath(); ctx.moveTo(pad.l, yy); ctx.lineTo(W - pad.r, yy); ctx.stroke();
+          }
+
+          function strokeSeries(arr, color, width, dashed) {
+            ctx.beginPath();
+            ctx.strokeStyle = color;
+            ctx.lineWidth = width;
+            ctx.setLineDash(dashed || []);
+            for (var i = 0; i < arr.length; i++) {
+              var px = x(data.t[i]);
+              var py = y(arr[i]);
+              if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+            }
+            ctx.stroke();
+            ctx.setLineDash([]);
+          }
+          strokeSeries(data.yawTrue, TEAL, 2, [6, 4]);
+          strokeSeries(data.yawInt, WAVE, 2);
+
+          ctx.fillStyle = INK;
+          ctx.font = "13px sans-serif";
+          ctx.fillText("yaw (°)", 8, 18);
+          ctx.fillStyle = TEAL; ctx.fillText("真姿态", pad.l, H - 12);
+          ctx.fillStyle = WAVE; ctx.fillText("积分姿态", pad.l + 70, H - 12);
+
+          var err = data.yawInt[data.yawInt.length - 1] - data.yawTrue[data.yawTrue.length - 1];
+          readout.textContent = "4 秒末尾误差 ≈ " + err.toFixed(2) + "°（约等于 零偏×时间 = " +
+            (bias * 4).toFixed(2) + "°，噪声会让它略有出入）。";
+        }
+
+        biasEl.addEventListener("input", draw);
+        noiseEl.addEventListener("input", draw);
+        document.getElementById("drift-zero").addEventListener("click", function () {
+          biasEl.value = "0";
+          draw();
+        });
+        document.getElementById("drift-reset").addEventListener("click", function () {
+          biasEl.value = "0.6";
+          noiseEl.value = "0.2";
+          draw();
+        });
+        window.addEventListener("resize", draw);
+        draw();
+      })();
+
+      // -------- 曝光对齐 --------
+      (function () {
+        var canvas = document.getElementById("align-demo");
+        var ctx = canvas.getContext("2d");
+        var expEl = document.getElementById("exp");
+        var delayEl = document.getElementById("delay");
+        var expOut = document.getElementById("exp-out");
+        var delayOut = document.getElementById("delay-out");
+        var readout = document.getElementById("align-readout");
+
+        function draw() {
+          var exp = parseFloat(expEl.value);
+          var delay = parseFloat(delayEl.value);
+          expOut.textContent = exp + " ms";
+          delayOut.textContent = delay + " ms";
+          var W = canvas.clientWidth || 820;
+          var H = canvas.clientHeight || 220;
+          canvas.width = W * (window.devicePixelRatio || 1);
+          canvas.height = H * (window.devicePixelRatio || 1);
+          ctx.setTransform(window.devicePixelRatio || 1, 0, 0, window.devicePixelRatio || 1, 0, 0);
+          ctx.clearRect(0, 0, W, H);
+          ctx.fillStyle = "#fffdf8";
+          ctx.fillRect(0, 0, W, H);
+
+          var t0 = 40; // ms 打开
+          var scale = (W - 80) / 80; // 0..80ms 映射
+          function X(ms) { return 40 + ms * scale; }
+
+          // IMU ticks every 5ms, shifted by delay
+          ctx.strokeStyle = TEAL;
+          ctx.lineWidth = 1.5;
+          for (var ms = 0; ms <= 80; ms += 5) {
+            var xm = X(ms + delay);
+            if (xm < 30 || xm > W - 20) continue;
+            ctx.beginPath();
+            ctx.moveTo(xm, 140);
+            ctx.lineTo(xm, 160);
+            ctx.stroke();
+          }
+          ctx.fillStyle = TEAL;
+          ctx.font = "12px sans-serif";
+          ctx.fillText("IMU 样本（可被延迟滑块整体平移）", 40, 180);
+
+          var tOpen = t0;
+          var tClose = t0 + exp;
+          var tMid = t0 + exp / 2;
+          ctx.fillStyle = "#fde8df";
+          ctx.strokeStyle = WAVE;
+          ctx.lineWidth = 2;
+          ctx.fillRect(X(tOpen), 60, X(tClose) - X(tOpen), 40);
+          ctx.strokeRect(X(tOpen), 60, X(tClose) - X(tOpen), 40);
+          ctx.fillStyle = WAVE;
+          ctx.fillText("曝光窗口", X(tOpen) + 4, 55);
+
+          ctx.beginPath();
+          ctx.strokeStyle = WAVE;
+          ctx.moveTo(X(tMid), 50);
+          ctx.lineTo(X(tMid), 160);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(X(tMid), 150, 5, 0, Math.PI * 2);
+          ctx.fillStyle = WAVE;
+          ctx.fill();
+
+          ctx.fillStyle = INK;
+          ctx.font = "13px sans-serif";
+          ctx.fillText("打开 t0=" + tOpen + " ms", X(tOpen) - 10, 130);
+          ctx.fillText("中心 " + tMid.toFixed(1) + " ms", X(tMid) + 8, 48);
+
+          var imuAt = tMid - delay;
+          readout.textContent = "应对齐相机曝光中心 " + tMid.toFixed(1) +
+            " ms；若 IMU 时钟相对推迟 " + delay +
+            " ms，则要在 IMU 轴上取 " + imuAt.toFixed(1) +
+            " ms 附近的样本。延迟不为 0 时，中心点与最近竖线会对不齐——稳像就会「补错拍」。";
+        }
+        expEl.addEventListener("input", draw);
+        delayEl.addEventListener("input", draw);
+        window.addEventListener("resize", draw);
+        draw();
+      })();
+
+      // -------- 互补滤波 --------
+      (function () {
+        var canvas = document.getElementById("comp-demo");
+        var ctx = canvas.getContext("2d");
+        var alphaEl = document.getElementById("alpha");
+        var pbiasEl = document.getElementById("pbias");
+        var alphaOut = document.getElementById("alpha-out");
+        var pbiasOut = document.getElementById("pbias-out");
+        var readout = document.getElementById("comp-readout");
+
+        function run(alpha, bias) {
+          var n = 500;
+          var T = 4.0;
+          var t = [], truth = [], gyroOnly = [], fused = [], accelTilt = [];
+          var rng = mulberry32(9);
+          var g = truePitch(0);
+          var f = truePitch(0);
+          for (var i = 0; i < n; i++) {
+            var ti = (i / (n - 1)) * T;
+            t.push(ti);
+            var th = truePitch(ti);
+            truth.push(th);
+            // 伪加速度计：真值 + 高频噪声
+            var acc = th + (rng() - 0.5) * 1.2;
+            accelTilt.push(acc);
+            if (i === 0) {
+              gyroOnly.push(g);
+              fused.push(f);
+              continue;
+            }
+            var dt = t[i] - t[i - 1];
+            var w0 = trueWp(t[i - 1]) + bias + (rng() - 0.5) * 0.3;
+            var w1 = trueWp(ti) + bias + (rng() - 0.5) * 0.3;
+            g = g + 0.5 * (w0 + w1) * dt;
+            var pred = f + 0.5 * (w0 + w1) * dt;
+            f = alpha * pred + (1 - alpha) * acc;
+            gyroOnly.push(g);
+            fused.push(f);
+          }
+          return { t: t, truth: truth, gyroOnly: gyroOnly, fused: fused };
+        }
+
+        function draw() {
+          var alpha = parseFloat(alphaEl.value);
+          var bias = parseFloat(pbiasEl.value);
+          alphaOut.textContent = alpha.toFixed(3);
+          pbiasOut.textContent = bias.toFixed(2) + " °/s";
+          var data = run(alpha, bias);
+          var W = canvas.clientWidth || 820;
+          var H = canvas.clientHeight || 360;
+          canvas.width = W * (window.devicePixelRatio || 1);
+          canvas.height = H * (window.devicePixelRatio || 1);
+          ctx.setTransform(window.devicePixelRatio || 1, 0, 0, window.devicePixelRatio || 1, 0, 0);
+          ctx.clearRect(0, 0, W, H);
+          ctx.fillStyle = "#fffdf8";
+          ctx.fillRect(0, 0, W, H);
+
+          var pad = { l: 48, r: 16, t: 28, b: 36 };
+          var all = data.truth.concat(data.gyroOnly, data.fused);
+          var ymin = Math.min.apply(null, all) - 1;
+          var ymax = Math.max.apply(null, all) + 1;
+          function x(ti) { return pad.l + (ti / 4) * (W - pad.l - pad.r); }
+          function y(v) { return pad.t + (1 - (v - ymin) / (ymax - ymin)) * (H - pad.t - pad.b); }
+
+          ctx.strokeStyle = "#e6dccb";
+          for (var g = 0; g <= 4; g++) {
+            var yy = pad.t + g * (H - pad.t - pad.b) / 4;
+            ctx.beginPath(); ctx.moveTo(pad.l, yy); ctx.lineTo(W - pad.r, yy); ctx.stroke();
+          }
+
+          function strokeSeries(arr, color, width, dashed) {
+            ctx.beginPath();
+            ctx.strokeStyle = color;
+            ctx.lineWidth = width;
+            ctx.setLineDash(dashed || []);
+            for (var i = 0; i < arr.length; i++) {
+              var px = x(data.t[i]);
+              var py = y(arr[i]);
+              if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+            }
+            ctx.stroke();
+            ctx.setLineDash([]);
+          }
+          strokeSeries(data.truth, MUTED, 2, [5, 4]);
+          strokeSeries(data.gyroOnly, WAVE, 1.5);
+          strokeSeries(data.fused, TEAL, 2.2);
+
+          ctx.font = "12px sans-serif";
+          ctx.fillStyle = MUTED; ctx.fillText("真 pitch", pad.l, H - 12);
+          ctx.fillStyle = WAVE; ctx.fillText("纯积分", pad.l + 70, H - 12);
+          ctx.fillStyle = TEAL; ctx.fillText("互补滤波", pad.l + 130, H - 12);
+
+          var errG = 0, errF = 0;
+          for (var i = 0; i < data.truth.length; i++) {
+            errG += Math.pow(data.gyroOnly[i] - data.truth[i], 2);
+            errF += Math.pow(data.fused[i] - data.truth[i], 2);
+          }
+          errG = Math.sqrt(errG / data.truth.length);
+          errF = Math.sqrt(errF / data.truth.length);
+          readout.textContent = "RMS 误差：纯积分 " + errG.toFixed(2) + "°，互补滤波 " +
+            errF.toFixed(2) + "°。α 越大越跟橙色；越小越被加速度计拉住（但更易吃震动噪声）。";
+        }
+
+        alphaEl.addEventListener("input", draw);
+        pbiasEl.addEventListener("input", draw);
+        document.getElementById("comp-reset").addEventListener("click", function () {
+          alphaEl.value = "0.980";
+          pbiasEl.value = "0.45";
+          draw();
+        });
+        window.addEventListener("resize", draw);
+        draw();
+      })();
+    })();
+  </script>
+  <noscript>
+    <div class="wrap">
+      <p class="callout note">浏览器禁用脚本时无法使用交互示意。静态图与 Python 脚本仍可用。</p>
+    </div>
+  </noscript>
+</body>
+</html>

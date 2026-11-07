@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 23 篇 · 陀螺仪电子防抖与 RS 校正</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        拼接与防抖 · 图像视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="22-imu-attitude.html">第 22 篇</a>
+        <a href="23-gyro-eis.html" aria-current="page">第 23 篇</a>
+        <a href="24-3d-stabilize.html">第 24 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 23 篇 · 重点 · 约 70 分钟</p>
+    <h1>陀螺仪电子防抖与 RS 校正</h1>
+    <p class="lede">第 22 篇把角速度积成了姿态。这一篇把姿态变成像素补偿：相对「平滑目标姿态」做 warp，就是陀螺 EIS；再把「每帧一个旋转」细化成「每一行一个旋转」，用来掰直卷帘快门的斜切。对照纯视觉 EIS，并摸清外参、延迟、以及和光流联合的入口。</p>
+    <div class="meta">
+      <span class="pill">先读：第 21–22 篇（RS 现象、陀螺积分）</span>
+      <span class="pill">重点篇：交互 + 失败案例更多</span>
+      <span class="pill">下一篇：3D 稳像</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#story">先看故事：姿态怎么「扶正」画面</a></li>
+        <li><a href="#pipeline">流水线：ω → R → 平滑目标 → warp</a></li>
+        <li><a href="#formula">公式白话：相对旋转与 H=KRK⁻¹</a></li>
+        <li><a href="#vs-visual">对照纯视觉 EIS</a></li>
+        <li><a href="#rs">RS 校正：行时间 + 角速度</a></li>
+        <li><a href="#calib">外参与延迟：两件必须标准的事</a></li>
+        <li><a href="#vio">和光流联合的入口</a></li>
+        <li><a href="#try">网页里拧一拧</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改这里</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="story">先看故事：姿态怎么「扶正」画面</h2>
+    <p>想象你举着手机拍街景。手机在抖，陀螺仪不停报告「这一瞬间绕哪根轴转了多快」。把角速度积起来，得到每一时刻相机朝哪——这叫<strong>姿态</strong>（第 22 篇）。</p>
+    <p>防抖不要「完全冻住朝向」。你故意慢慢扫过街景时，画面仍应跟着走；只是高频手抖要压掉。做法是：</p>
+    <ol>
+      <li>从姿态序列里做出一条<strong>平滑目标姿态</strong>（保留慢运镜，去掉快抖动）；</li>
+      <li>看当前真实姿态相对目标「多转了多少」；</li>
+      <li>用数字变换把这一帧的像素<strong>扳回去</strong>——这就是陀螺辅助的电子防抖（EIS）。</li>
+    </ol>
+    <figure>
+      <img src="assets/figures/ch23_pipeline.png" alt="角速度到姿态到平滑到相对旋转再到warp的流水线">
+      <figcaption>图 23-1　本篇主线。RS 校正只是把「每帧一个 R」换成「每一行一个 R(y)」。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>生活类比：你在颠簸的公交上看书。眼睛（平滑目标）跟着书页的大动作走，但不跟着每一次颠簸抖。手（warp）把书页相对你的视线扶正。</p>
+    </div>
+
+    <h2 id="pipeline">流水线：ω → R → 平滑目标 → warp</h2>
+    <p>脚本合成了一段「手持」姿态：慢速偏航（运镜）+ 高频抖动。橙色是原始积分结果，青色是滑动平均后的目标。</p>
+    <figure>
+      <img src="assets/figures/ch23_attitude_paths.png" alt="原始与平滑后的 yaw pitch 曲线">
+      <figcaption>图 23-2　姿态序列。平滑窗口越大，目标越「粘」，画面越稳，但边缘要裁掉的黑边也越多（和第 20 篇的裁切比是同一权衡）。</figcaption>
+    </figure>
+    <p>对每一帧：用当前姿态渲染一张「晃着的图」，再用相对目标姿态的旋转去做 warp。上排是未稳像，下排是陀螺 EIS。</p>
+    <figure>
+      <img src="assets/figures/ch23_warp_compare.png" alt="未稳像与陀螺EIS三帧对照">
+      <figcaption>图 23-3　相对平滑目标做 warp。下排楼体朝向更一致；边角出现灰边，是旋转补偿后要裁切的区域。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/images/ch23_synth_strip.png" alt="OpenCV导出的晃与稳横条">
+      <figcaption>图 23-4　脚本用 OpenCV 导出的合成条：上 raw，下 gyro EIS。</figcaption>
+    </figure>
+
+    <h2 id="formula">公式白话：相对旋转与 H=KRK⁻¹</h2>
+    <p>设某一帧相机姿态为旋转矩阵 <code>R_cam</code>，平滑目标为 <code>R_target</code>。相对目标「多出来的旋转」是：</p>
+    <p class="formula">R<sub>rel</sub> = R<sub>target</sub><sup>T</sup> · R<sub>cam</sub></p>
+    <p>白话：先站到目标朝向的坐标系里，再看当前朝向相对它转了多少。</p>
+    <p>要补偿，就对画面施加 <code>R_rel</code> 的逆。在已知内参 <code>K</code>（焦距、主点）时，纯旋转对应的像素变换是一个单应：</p>
+    <p class="formula">H = K · R<sub>rel</sub><sup>−1</sup> · K<sup>−1</sup></p>
+    <p>再用 <code>cv2.warpPerspective</code> 即可。直觉：三维里转一下相机，再投回二维——远景、纯旋转时，这就是一张 3×3 的 H（和第 2–3 篇的透视是同一家族）。</p>
+    <pre><code>R_rel = R_target.T @ R_cam
+H = K @ np.linalg.inv(R_rel) @ np.linalg.inv(K)
+stable = cv2.warpPerspective(frame, H, (W, H))</code></pre>
+    <div class="callout note">
+      <p>小角度时，绕竖轴转 θ 弧度，画面大约水平挪 <code>f·θ</code> 个像素（f 是焦距像素）。所以「姿态差」最终会变成你看见的平移/旋转/轻微透视。</p>
+    </div>
+
+    <h2 id="vs-visual">对照纯视觉 EIS</h2>
+    <p>第 19 篇一路：跟踪特征或光流 → 估帧间变换 → 平滑路径 → 补偿。那是<strong>纯视觉 EIS</strong>。陀螺 EIS 不看像素内容，只看传感器。</p>
+    <figure>
+      <img src="assets/figures/ch23_visual_vs_gyro.png" alt="视觉EIS与陀螺EIS对照表">
+      <figcaption>图 23-5　各有绝招。低纹理、运动模糊、快速甩动时陀螺更稳；视觉能看见长期漂移并慢慢拉回，也不依赖外参。</figcaption>
+    </figure>
+    <div class="table-scroll">
+      <table>
+        <caption>表 23-1　什么时候更信谁（工程直觉）</caption>
+        <thead>
+          <tr><th>场景</th><th>更信陀螺</th><th>更信视觉</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>白墙 / 夜景糊成一片</td><td>✓</td><td>特征点不够</td></tr>
+          <tr><td>快速甩动、大角速度</td><td>✓</td><td>跟踪易断</td></tr>
+          <tr><td>开机很久、积分已漂</td><td>需视觉拉回</td><td>✓</td></tr>
+          <tr><td>外参 / 时间戳未标定</td><td>会「越稳越歪」</td><td>不依赖 IMU</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="rs">RS 校正：行时间 + 角速度</h2>
+    <p>第 21 篇：卷帘快门不是整幅同一时刻曝光，而是<strong>一行接一行</strong>。若曝光期间相机还在转，上面的行和下面的行「看到」的朝向不同——竖线被拧成斜线，就是果冻/斜切。</p>
+    <p>陀螺给出角速度 ω。设相邻两行间隔为 <code>row_time</code>（常见约 10–40 微秒），以画面中间行为参考时刻，第 y 行的相对时间是：</p>
+    <p class="formula">Δt(y) = (y − y<sub>mid</sub>) · row_time</p>
+    <p>一阶近似（偏航为主）时，这一行相对中心行的水平像素位移约：</p>
+    <p class="formula">Δx(y) ≈ f · ω<sub>yaw</sub> · Δt(y)</p>
+    <p>合成 RS：按行把全局快门图挪 <code>Δx</code>。校正：按行挪回来（符号相反）。更完整的写法是每行一个小旋转 <code>R(y)≈Exp(ω·Δt)</code>，再变成单应——脚本注释里写了这条路；演示用一阶平移，足够把「斜→直」看清。</p>
+    <figure>
+      <img src="assets/figures/ch23_rs_skew.png" alt="全局快门、RS斜切、校正后三图">
+      <figcaption>图 23-6　左：全局快门对照。中：卷帘 + 偏航，竖线斜切。右：用同一 ω 与行时间按行扳回。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch23_rs_corrected.png" alt="RS拧斜与校正特写">
+      <figcaption>图 23-7　特写：斜切被掰直。边角可能露出填充色——和帧级 EIS 一样，最后通常要裁切。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p><strong>失败案例 1：</strong>ω 估小了（或行时间填小了）→ 校正不够，仍斜。<strong>失败案例 2：</strong>符号反了 → 越校正越斜。<strong>失败案例 3：</strong>只用帧中心一个姿态做整幅 warp，高频甩动时帧内仍果冻——这正是「要按行」的理由。</p>
+    </div>
+
+    <h2 id="calib">外参与延迟：两件必须标准的事</h2>
+    <p>陀螺芯片的坐标轴不一定等于相机光轴。差一个固定旋转 <code>R_ext</code>（外参）：</p>
+    <p class="formula">R<sub>cam</sub> = R<sub>ext</sub> · R<sub>imu</sub></p>
+    <p>装反、绕轴差 90°，稳像会把「该水平补的」补成竖直——看起来像故意捣乱。</p>
+    <p>另一件是<strong>时间延迟</strong>：IMU 采样时刻与「这一帧曝光中心」可能差几毫秒。相位错了，补偿会打在错误的时间上：画面像在「追着抖」或「反着抖」。</p>
+    <figure>
+      <img src="assets/figures/ch23_extrinsic_delay.png" alt="外参示意与延迟错位的角速度曲线">
+      <figcaption>图 23-8　左：外参把 IMU 姿态变到相机。右：同一波形平移一点，曝光中心读到的 ω 就错了。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>有趣细节：在本篇一阶「纯偏航切变」模型里，给校正公式加一个<strong>与行无关的常数延迟</strong>，效果近似整幅平移，竖线仍直。真正伤 RS 校正的，是「每行对应到错误的角速度样本」（时间轴拉错、行时间填错、ω 比例错）。帧级 EIS 则对延迟相位非常敏感。</p>
+    </div>
+
+    <h2 id="vio">和光流联合的入口</h2>
+    <p>只积陀螺：高频稳，但会漂。只跑光流：能看见漂移，但糊了就瞎。合在一起的最小直觉：</p>
+    <ul>
+      <li>陀螺（或短时积分姿态）负责<strong>高频</strong>相对运动；</li>
+      <li>光流 / 特征跟踪给出帧间变换，用来估计并扣掉<strong>低频漂移</strong>，或在线微调外参与延迟；</li>
+      <li>再对融合后的姿态做平滑目标 + warp（可继续按行做 RS）。</li>
+    </ul>
+    <figure>
+      <img src="assets/figures/ch23_vio_entry.png" alt="陀螺与光流融合再平滑warp的入口图">
+      <figcaption>图 23-9　视觉-惯性稳像入口。第 24 篇会把「目标路径」放到 3D 虚拟相机里规划。</figcaption>
+    </figure>
+
+    <h2 id="try">网页里拧一拧</h2>
+    <p>不装 Python 也能建立手感。下面两个示意对应本篇两条主线。</p>
+
+    <h3>陀螺 EIS：平滑窗口</h3>
+    <p>左图：取景朝向随时间抖。右图：相对平滑目标补偿后的「剩余晃动」。加大平滑，右图更平，但提示裁切比上升。</p>
+    <div class="playground">
+      <canvas id="eis-demo" class="demo" width="820" height="320" aria-label="陀螺EIS平滑示意"></canvas>
+      <div class="controls">
+        <label for="shake">抖动幅度</label>
+        <input id="shake" type="range" min="0" max="40" step="1" value="18">
+        <output id="shake-out" for="shake">18</output>
+        <label for="win">平滑窗口</label>
+        <input id="win" type="range" min="1" max="21" step="2" value="9">
+        <output id="win-out" for="win">9</output>
+      </div>
+      <div class="actions">
+        <button type="button" class="primary" id="eis-play" aria-pressed="false">播放</button>
+        <button type="button" id="eis-reset">恢复默认</button>
+      </div>
+      <p class="readout" id="eis-readout" aria-live="polite"></p>
+    </div>
+
+    <h3>RS 校正：角速度 × 行时间</h3>
+    <p>中间竖线应保持竖直。拖动角速度或行时间，看斜切；打开「校正」用同一模型扳回。把「ω 比例」拧到一半，模拟低估陀螺——校正会不够。</p>
+    <div class="playground">
+      <canvas id="rs-demo" class="demo tall" width="820" height="360" aria-label="RS斜切与校正示意"></canvas>
+      <div class="controls">
+        <label for="omega">偏航角速度 (°/s)</label>
+        <input id="omega" type="range" min="0" max="400" step="5" value="220">
+        <output id="omega-out" for="omega">220</output>
+        <label for="rowus">行时间 (μs)</label>
+        <input id="rowus" type="range" min="10" max="100" step="1" value="55">
+        <output id="rowus-out" for="rowus">55</output>
+        <label for="oscale">校正用 ω 比例</label>
+        <input id="oscale" type="range" min="0" max="150" step="5" value="100">
+        <output id="oscale-out" for="oscale">100%</output>
+      </div>
+      <div class="actions">
+        <button type="button" class="primary" id="rs-toggle" aria-pressed="true">校正：开</button>
+        <button type="button" id="rs-reset">恢复默认</button>
+      </div>
+      <p class="readout" id="rs-readout" aria-live="polite"></p>
+    </div>
+
+    <h2 id="run">运行脚本</h2>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <pre class="terminal"><code>source .venv/bin/activate
+MPLCONFIGDIR=/tmp/mpl-cache python code/ch23_gyro_eis.py</code></pre>
+      <p>终端应打印「自检通过」，并写出：</p>
+      <ul>
+        <li><code>assets/figures/ch23_pipeline.png</code>、<code>ch23_attitude_paths.png</code>、<code>ch23_warp_compare.png</code></li>
+        <li><code>ch23_visual_vs_gyro.png</code>、<code>ch23_rs_skew.png</code>、<code>ch23_rs_corrected.png</code></li>
+        <li><code>ch23_extrinsic_delay.png</code>、<code>ch23_vio_entry.png</code></li>
+        <li><code>assets/images/ch23_synth_strip.png</code>、<code>ch23_rs_demo.png</code></li>
+        <li>你的 <code>ch23_my_eis.png</code>、<code>ch23_my_rs.png</code>、<code>ch23_my_rs_fix.png</code></li>
+      </ul>
+    </div>
+
+    <h2 id="edit">改这里</h2>
+    <p>打开 <a href="code/ch23_gyro_eis.py"><code>code/ch23_gyro_eis.py</code></a> 顶部「改这里」。只影响 <code>ch23_my_*.png</code>；课文对照图仍按固定参数重画。</p>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>把 <code>MY_SHAKE_DEG</code> 改成 <code>1.5</code> 再改成 <code>8</code>，对比 <code>ch23_my_eis.png</code> 上排晃动。</li>
+        <li>把 <code>MY_SMOOTH_WIN</code> 改成 <code>3</code> 与 <code>15</code>：窗口大则下排更稳、灰边往往更多。</li>
+        <li>把 <code>MY_OMEGA_YAW_DPS</code> 改成 <code>80</code> 与 <code>350</code>，看 <code>ch23_my_rs.png</code> 中竖线斜度。</li>
+        <li>把 <code>MY_ROW_TIME_US</code> 改成 <code>20</code>，斜切应变弱（总曝光扫过时间变短）。</li>
+        <li>把 <code>MY_DELAY_MS</code> 改成 <code>5</code>：在本篇一阶模型里主要造成整体平移感；若你改脚本去「用错误 ω 比例校正」，斜切会残留——对应自测里的失败模式。</li>
+      </ol>
+    </div>
+
+    <h2 id="check">自测</h2>
+    <p>先自己答，再展开。</p>
+    <details class="quiz">
+      <summary>1. 陀螺 EIS 补偿的是「绝对姿态」还是「相对平滑目标的差」？</summary>
+      <p>是相对平滑目标的差。完全锁死绝对朝向会把故意运镜也砍掉，而且边缘裁切会很难看。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. 为什么纯旋转可以用 H = K R K⁻¹ 做 warp？</summary>
+      <p>远景或纯旋转时，三维旋转再投影，等价于平面上的一个单应。K 把像素和射线方向连起来，R 转射线，再投回像素。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. 低纹理、运动模糊时，为何陀螺 EIS 往往比纯视觉更稳？</summary>
+      <p>陀螺不依赖图像内容；视觉要靠特征/光流，糊了、没纹理时估计会漂或断。</p>
+    </details>
+    <details class="quiz">
+      <summary>4. RS 校正为什么常常要「按行」而不是整帧一个变换？</summary>
+      <p>因为每一行的曝光时刻不同，曝光期间姿态还在变。整帧一个 R 只能对中心行近似正确，上下行仍会斜。</p>
+    </details>
+    <details class="quiz">
+      <summary>5. 一阶模型里 Δx ≈ f · ω · Δt，行时间填大了会怎样？</summary>
+      <p>会认为上下行之间转过的角度更大，校正位移过大，可能「矫枉过正」甚至反方向斜（若再叠符号错误更糟）。</p>
+    </details>
+    <details class="quiz">
+      <summary>6. 外参 R_ext 错了 90°，稳像时最典型的坏现象是什么？</summary>
+      <p>补偿轴对不上：该水平挪的变成竖直拧，画面会出现奇怪的扭转或「越稳越歪」。</p>
+    </details>
+    <details class="quiz">
+      <summary>7. 和光流联合时，谁更适合扛高频？谁更适合修长期漂移？</summary>
+      <p>陀螺（高采样、与纹理无关）扛高频；光流/特征看见的帧间误差更适合修低频漂移与标定残余。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>二维仿射 / 单应假设在近景大视差时会不够。下一篇进入 <strong>3D 稳像</strong>：在三维里规划更平滑的虚拟相机路径，再重新投影，并对比 2D / 陀螺 EIS / 3D 的能力边界。</p>
+    <p><a href="24-3d-stabilize.html">第 24 篇 · 三维稳像入门</a>（待写）</p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="22-imu-attitude.html">上一篇</a>
+      <a href="index.html">目录</a>
+      <a href="24-3d-stabilize.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var INK = "#1c1915";
+      var MUTED = "#5c564c";
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+
+      function surface(canvas) {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var width = canvas.clientWidth || 640;
+        var height = canvas.clientHeight || 300;
+        var pw = Math.round(width * dpr);
+        var ph = Math.round(height * dpr);
+        if (canvas.width !== pw || canvas.height !== ph) {
+          canvas.width = pw;
+          canvas.height = ph;
+        }
+        var ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(0, 0, width, height);
+        return { ctx: ctx, width: width, height: height };
+      }
+
+      function movingAvg(arr, win) {
+        win = Math.max(1, win | 0);
+        if (win % 2 === 0) win += 1;
+        var half = (win - 1) / 2;
+        var out = new Array(arr.length);
+        var i, j, s, n;
+        for (i = 0; i < arr.length; i++) {
+          s = 0;
+          n = 0;
+          for (j = i - half; j <= i + half; j++) {
+            if (j >= 0 && j < arr.length) {
+              s += arr[j];
+              n += 1;
+            }
+          }
+          out[i] = s / n;
+        }
+        return out;
+      }
+
+      /* -------- EIS playground -------- */
+      var eisPlaying = false;
+      var eisFrame = 0;
+      var eisN = 60;
+      var eisLast = null;
+
+      function makeYaw(amp) {
+        var yaw = [];
+        var i, t;
+        for (i = 0; i < eisN; i++) {
+          t = i / (eisN - 1);
+          yaw.push(
+            12 * t +
+              amp * 0.55 * Math.sin(2 * Math.PI * 6.5 * t) +
+              amp * 0.25 * Math.sin(2 * Math.PI * 2.3 * t + 0.4)
+          );
+        }
+        return yaw;
+      }
+
+      function drawEis() {
+        var amp = Number(document.getElementById("shake").value);
+        var win = Number(document.getElementById("win").value);
+        document.getElementById("shake-out").textContent = String(amp);
+        document.getElementById("win-out").textContent = String(win);
+
+        var yaw = makeYaw(amp);
+        var target = movingAvg(yaw, win);
+        var canvas = document.getElementById("eis-demo");
+        var box = surface(canvas);
+        var ctx = box.ctx;
+        var W = box.width;
+        var H = box.height;
+        var pad = 36;
+        var midY = H * 0.38;
+        var plotH = H * 0.55;
+
+        ctx.fillStyle = MUTED;
+        ctx.font = "13px sans-serif";
+        ctx.fillText("原始姿态 yaw", pad, 22);
+        ctx.fillText("补偿后剩余（相对目标）", W * 0.55, 22);
+
+        function plot(xs, color, x0, x1, yBase, scale) {
+          var i;
+          ctx.beginPath();
+          for (i = 0; i < xs.length; i++) {
+            var x = x0 + (x1 - x0) * (i / (xs.length - 1));
+            var y = yBase - xs[i] * scale;
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          }
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        }
+
+        var left0 = pad;
+        var left1 = W * 0.48;
+        var right0 = W * 0.55;
+        var right1 = W - pad;
+        ctx.strokeStyle = "#e6dccb";
+        ctx.beginPath();
+        ctx.moveTo(left0, midY);
+        ctx.lineTo(left1, midY);
+        ctx.moveTo(right0, midY);
+        ctx.lineTo(right1, midY);
+        ctx.stroke();
+
+        plot(yaw, WAVE, left0, left1, midY, plotH / 50);
+        plot(target, TEAL, left0, left1, midY, plotH / 50);
+
+        var resid = yaw.map(function (v, i) { return v - target[i]; });
+        plot(resid, TEAL, right0, right1, midY, plotH / 30);
+
+        // playhead
+        var px = left0 + (left1 - left0) * (eisFrame / (eisN - 1));
+        ctx.strokeStyle = INK;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(px, 40);
+        ctx.lineTo(px, H - 20);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        var crop = Math.min(48, 6 + win * 1.8 + amp * 0.35);
+        document.getElementById("eis-readout").textContent =
+          "帧 " + eisFrame + "　剩余 RMS ≈ " +
+          (Math.sqrt(resid.reduce(function (s, v) { return s + v * v; }, 0) / resid.length)).toFixed(2) +
+          "°　示意裁切比 ↑ 约 " + crop.toFixed(0) + "%（窗口↑或抖↑都会催着你裁更多）";
+      }
+
+      function eisTick(ts) {
+        if (!eisPlaying) return;
+        if (eisLast == null) eisLast = ts;
+        if (ts - eisLast > 60) {
+          eisFrame = (eisFrame + 1) % eisN;
+          eisLast = ts;
+          drawEis();
+        }
+        requestAnimationFrame(eisTick);
+      }
+
+      document.getElementById("shake").addEventListener("input", drawEis);
+      document.getElementById("win").addEventListener("input", drawEis);
+      document.getElementById("eis-play").addEventListener("click", function () {
+        eisPlaying = !eisPlaying;
+        this.setAttribute("aria-pressed", eisPlaying ? "true" : "false");
+        this.textContent = eisPlaying ? "暂停" : "播放";
+        eisLast = null;
+        if (eisPlaying) requestAnimationFrame(eisTick);
+      });
+      document.getElementById("eis-reset").addEventListener("click", function () {
+        document.getElementById("shake").value = 18;
+        document.getElementById("win").value = 9;
+        eisFrame = 0;
+        drawEis();
+      });
+      drawEis();
+
+      /* -------- RS playground -------- */
+      var rsOn = true;
+
+      function drawBuilding(ctx, x0, y0, w, h, shear) {
+        // shear: horizontal shift per unit y from top
+        function X(x, y) {
+          return x + shear * (y - y0);
+        }
+        ctx.fillStyle = "#ece4d6";
+        ctx.fillRect(x0, y0, w, h * 0.45);
+        ctx.fillStyle = "#d2c6b2";
+        ctx.fillRect(x0, y0 + h * 0.45, w, h * 0.55);
+
+        var floors = [
+          [0.18, 0.5, "#5a6e96"],
+          [0.42, 0.62, "#645a46"],
+          [0.68, 0.48, "#50786e"]
+        ];
+        floors.forEach(function (b) {
+          var bw = w * 0.14;
+          var bh = h * b[1] * 0.45;
+          var bx = x0 + w * b[0];
+          var by = y0 + h * 0.45 - bh;
+          ctx.beginPath();
+          ctx.moveTo(X(bx, by), by);
+          ctx.lineTo(X(bx + bw, by), by);
+          ctx.lineTo(X(bx + bw, by + bh), by + bh);
+          ctx.lineTo(X(bx, by + bh), by + bh);
+          ctx.closePath();
+          ctx.fillStyle = b[2];
+          ctx.fill();
+        });
+
+        // vertical poles
+        ctx.strokeStyle = "#2a241c";
+        ctx.lineWidth = 3;
+        [0.3, 0.5, 0.72].forEach(function (fx) {
+          var px = x0 + w * fx;
+          ctx.beginPath();
+          ctx.moveTo(X(px, y0 + 16), y0 + 16);
+          ctx.lineTo(X(px, y0 + h - 16), y0 + h - 16);
+          ctx.stroke();
+        });
+      }
+
+      function drawRs() {
+        var omega = Number(document.getElementById("omega").value);
+        var rowus = Number(document.getElementById("rowus").value);
+        var oscale = Number(document.getElementById("oscale").value) / 100;
+        document.getElementById("omega-out").textContent = String(omega);
+        document.getElementById("rowus-out").textContent = String(rowus);
+        document.getElementById("oscale-out").textContent = Math.round(oscale * 100) + "%";
+
+        var canvas = document.getElementById("rs-demo");
+        var box = surface(canvas);
+        var ctx = box.ctx;
+        var W = box.width;
+        var H = box.height;
+        var panelW = (W - 36) / 2;
+        var panelH = H - 50;
+        var f = 280; // fake focal in px for demo
+        var dtFrame = rowus * 1e-6 * 200; // pretend 200 rows span
+        var maxShift = f * (omega * Math.PI / 180) * (dtFrame / 2);
+        var shearRaw = maxShift / (panelH / 2);
+
+        // left: RS skewed
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(12, 36, panelW, panelH);
+        ctx.clip();
+        drawBuilding(ctx, 12, 36, panelW, panelH, shearRaw);
+        ctx.restore();
+        ctx.strokeStyle = WAVE;
+        ctx.strokeRect(12.5, 36.5, panelW - 1, panelH - 1);
+        ctx.fillStyle = WAVE;
+        ctx.font = "13px sans-serif";
+        ctx.fillText("RS 斜切", 20, 28);
+
+        // right: corrected with possibly wrong omega scale
+        var shearLeft = shearRaw * (1 - oscale);
+        if (!rsOn) shearLeft = shearRaw;
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(24 + panelW, 36, panelW, panelH);
+        ctx.clip();
+        drawBuilding(ctx, 24 + panelW, 36, panelW, panelH, shearLeft);
+        ctx.restore();
+        ctx.strokeStyle = TEAL;
+        ctx.strokeRect(24.5 + panelW, 36.5, panelW - 1, panelH - 1);
+        ctx.fillStyle = TEAL;
+        ctx.fillText(rsOn ? "校正后" : "校正关（同左）", 32 + panelW, 28);
+
+        var tip =
+          "顶到底相对位移约 " +
+          (2 * Math.abs(maxShift)).toFixed(1) +
+          " px（示意）。";
+        if (rsOn && oscale < 0.95) tip += " ω 比例 < 100% → 仍残留斜切。";
+        if (rsOn && oscale > 1.05) tip += " ω 比例 > 100% → 可能矫枉过正。";
+        if (!rsOn) tip += " 打开校正看竖线能否扳直。";
+        document.getElementById("rs-readout").textContent = tip;
+      }
+
+      document.getElementById("omega").addEventListener("input", drawRs);
+      document.getElementById("rowus").addEventListener("input", drawRs);
+      document.getElementById("oscale").addEventListener("input", drawRs);
+      document.getElementById("rs-toggle").addEventListener("click", function () {
+        rsOn = !rsOn;
+        this.setAttribute("aria-pressed", rsOn ? "true" : "false");
+        this.textContent = rsOn ? "校正：开" : "校正：关";
+        drawRs();
+      });
+      document.getElementById("rs-reset").addEventListener("click", function () {
+        document.getElementById("omega").value = 220;
+        document.getElementById("rowus").value = 55;
+        document.getElementById("oscale").value = 100;
+        rsOn = true;
+        var btn = document.getElementById("rs-toggle");
+        btn.setAttribute("aria-pressed", "true");
+        btn.textContent = "校正：开";
+        drawRs();
+      });
+      drawRs();
+
+      window.addEventListener("resize", function () {
+        drawEis();
+        drawRs();
+      });
+    })();
+  </script>
+</body>
+</html>

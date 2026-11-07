@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 10 篇 · 接缝寻找与图像融合</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        拼接与防抖 · 图像视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="09-projection.html">第 9 篇</a>
+        <a href="10-blend.html" aria-current="page">第 10 篇</a>
+        <a href="11-exposure.html">第 11 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 10 篇 · 叠图不露馅 · 约 55 分钟</p>
+    <h1>接缝寻找与图像融合</h1>
+    <p class="lede">前面几篇把两张图 warp 到同一画布后，重叠区怎么「粘」在一起？硬切会留一条刀口，简单平均会糊成重影。本篇从最笨的三种拼法讲起，再讲羽化、多频段（拉普拉斯金字塔）融合，以及用动态规划/图割去「找一条不太显眼的缝」。</p>
+    <div class="meta">
+      <span class="pill">先读：第 8–9 篇（流水线与投影）概念即可</span>
+      <span class="pill">下一篇：曝光、鬼影与失败案例</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#scene">重叠区到底在烦什么</a></li>
+        <li><a href="#three">硬切 · 平均 · 羽化</a></li>
+        <li><a href="#feather">羽化宽度：柔和与重影的权衡</a></li>
+        <li><a href="#try">交互：拖羽化宽度</a></li>
+        <li><a href="#pyramid">多频段 / 拉普拉斯金字塔（白话）</a></li>
+        <li><a href="#seam">找缝：动态规划与图割直觉</a></li>
+        <li><a href="#compare">三种结果对照</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改这里</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="scene">重叠区到底在烦什么</h2>
+    <p>全景拼接做到「两张图已经画到同一张大画布」时，中间会有一条<strong>重叠带</strong>：同一块真实世界，左右相机各拍了一份。理想情况两份像素一模一样，随便留哪边都行。现实里几乎总会有差：</p>
+    <ul>
+      <li><strong>亮度/色温不同</strong>（自动曝光、白平衡各自为政）→ 硬切会留下一道「色差刀口」。</li>
+      <li><strong>几何没完全对上</strong>（视差、单应近似、标定误差）→ 同一根电线杆左右各偏几个像素 → 一平均就变成「双影」。</li>
+      <li><strong>运动物体</strong>（行人走过）→ 一边有人一边没人，融合会出「半透明鬼影」（第 11 篇细说）。</li>
+    </ul>
+    <p>本篇脚本造了一对<strong>合成图</strong>：左暖右冷，重叠区里竖杆故意错开几个像素，用来放大这些毛病，方便肉眼对比。</p>
+    <figure>
+      <img src="assets/figures/ch10_overlap_setup.png" alt="左图、右图与简单叠加">
+      <figcaption>图 10-1　左：暖色左图。中：冷色右图（竖杆略错位）。右：两图半透明叠在一起——重叠带已经发糊。虚线标出重叠区边界。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>记住流水线位置：检测 → 匹配 → 估 H → warp 到画布 → <strong>本篇：融合</strong> →（可选）曝光补偿。融合解决的是「叠在一起怎么不露馅」，不是重新估几何。</p>
+    </div>
+
+    <h2 id="three">硬切 · 平均 · 羽化</h2>
+    <p>先看三种「小学生也会想到」的拼法。它们几乎零成本，但观感差很多。</p>
+
+    <h3>1. 硬切（hard cut）</h3>
+    <p>在重叠区选一条竖线（或任意曲线），左边像素全用左图，右边全用右图。<strong>每个像素只来自一张图</strong>，所以不会糊，也不会半透明重影。坏处：交界处若亮度或纹理对不齐，会留下一条清晰的缝——像两张纸对贴。</p>
+
+    <h3>2. 平均（average）</h3>
+    <p>重叠区每个像素取左右平均值：</p>
+    <p class="formula">I = (I<sub>L</sub> + I<sub>R</sub>) / 2</p>
+    <p>白话：两张照片「半透明叠一起」。色差会被冲淡一点，但几何错位会变成<strong>双影/发糊</strong>——杆子变两根，文字变重影。两边权重永远 0.5，没有「逐渐交接」。</p>
+
+    <h3>3. 羽化（feathering）</h3>
+    <p>仍然混合，但权重随位置渐变：靠近左独有区时左图权重大，靠近右独有区时右图权重大。重叠带中间附近，权重交叉过渡。常见一维线性羽化：</p>
+    <p class="formula">I = w · I<sub>L</sub> + (1 − w) · I<sub>R</sub>，　w 从 1 滑到 0</p>
+    <p>缝被「抹开」成一条色带，刀口不那么刺眼；但若杆子对不齐，过渡带里仍会短暂出现双影——只是比纯平均柔和一些。</p>
+    <figure>
+      <img src="assets/figures/ch10_hard_vs_avg_vs_feather.png" alt="硬切、平均、羽化三种结果">
+      <figcaption>图 10-2　左：硬切，色差刀口清晰。中：平均，重叠整片糊。右：羽化，过渡渐变；半宽越大越柔，也越容易拖长重影区。</figcaption>
+    </figure>
+
+    <h2 id="feather">羽化宽度：柔和与重影的权衡</h2>
+    <p>羽化要定一个<strong>半宽</strong>（脚本里叫 <code>FEATHER_HALF_WIDTH</code>）：从「左图完全占优」过渡到「右图完全占优」大约跨 2×半宽 个像素。</p>
+    <ul>
+      <li>半宽太小 ≈ 接近硬切，缝仍明显。</li>
+      <li>半宽太大 ≈ 接近大范围平均，几何误差会拖成一条宽宽的重影带。</li>
+      <li>实践里常先让几何尽量对齐，再选「刚好盖住色差、又不把错位杆子抹太宽」的宽度。</li>
+    </ul>
+    <figure>
+      <img src="assets/figures/ch10_feather_weights.png" alt="左右羽化权重图与剖面">
+      <figcaption>图 10-3　左/中：左右权重热力图。右：中间一行剖面——两条曲线交叉，且在重叠有效区满足 wl + wr = 1（亮度守恒，不会无乘变暗）。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>实现时只在「两图都有像素」的地方做交叉权重；只属于左图或只属于右图的地方，权重直接给 1，不要掺黑色背景。</p>
+    </div>
+
+    <h2 id="try">交互：拖羽化宽度</h2>
+    <p>下面用浏览器即时模拟一维羽化（不跑 OpenCV）。暖色块与冷色块在中间重叠；拖动半宽，看过渡带变宽还是变窄。同时画一条「错位竖线」——半宽一大，双影带就会变宽。</p>
+    <div class="playground">
+      <canvas id="feather-demo" class="demo" width="820" height="280" aria-label="羽化宽度交互"></canvas>
+      <div class="controls">
+        <label for="feather-width">半宽</label>
+        <input type="range" id="feather-width" min="2" max="90" value="35" step="1">
+        <output id="feather-out" for="feather-width">35 px</output>
+        <label for="feather-shift">错位</label>
+        <input type="range" id="feather-shift" min="0" max="20" value="8" step="1">
+        <output id="feather-shift-out" for="feather-shift">8 px</output>
+      </div>
+      <div class="actions">
+        <button type="button" class="primary" id="feather-reset">恢复默认</button>
+      </div>
+      <p class="readout" id="feather-readout" aria-live="polite"></p>
+    </div>
+
+    <h2 id="pyramid">多频段 / 拉普拉斯金字塔（白话）</h2>
+    <p>单层羽化有个天生矛盾：你希望<strong>亮度慢慢混</strong>（过渡要宽），又希望<strong>细线、文字、杆子别糊</strong>（过渡要窄）。一个宽度两头难顾。</p>
+    <p><strong>多频段融合</strong>的点子：先把图拆成好几层「不同粗细的细节」，再<strong>每层用不同宽度的权重</strong>混合，最后加回去。</p>
+    <ul>
+      <li><strong>低频</strong>（整体明暗、大色块）：用很宽的羽化 → 色差慢慢过渡，不易留色带。</li>
+      <li><strong>高频</strong>（边缘、文字、细杆）：用很窄的过渡 → 几乎像硬切，细节不双影。</li>
+    </ul>
+    <p>工程上常用<strong>拉普拉斯金字塔</strong>：</p>
+    <ol>
+      <li>反复高斯模糊再缩小，得到越来越糊的图（高斯金字塔）。</li>
+      <li>每一层「本层糊图 − 上一层放大回来」→ 留下这一层的细节（拉普拉斯层）。</li>
+      <li>最顶层留一张最糊的小图。</li>
+      <li>对左右图的每一层，用对应平滑程度的权重混合。</li>
+      <li>从顶往下放大相加，重建出融合结果。</li>
+    </ol>
+    <figure>
+      <img src="assets/figures/ch10_pyramid_idea.png" alt="多频段融合层次示意">
+      <figcaption>图 10-4　记忆口诀：粗的慢慢混，细的快快切。这不是魔法，是「按频率选过渡宽度」。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch10_multiband_result.png" alt="单层羽化与多频段对比">
+      <figcaption>图 10-5　同半宽设定下：单层羽化（左）过渡带细节更糊；多频段（右）往往在保边缘的同时，大范围色差更顺。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>OpenCV 的 <code>detail::MultiBandBlender</code>、许多全景库默认就走这一路。本篇脚本用「拉普拉斯金字塔 + 权重高斯金字塔」手写了一版示意，方便你看清步骤；工业实现还有边界处理、层数自适应等细节。</p>
+    </div>
+
+    <h2 id="seam">找缝：动态规划与图割直觉</h2>
+    <p>还有一类思路：<strong>尽量别混，先找一条「两图最像」的路径，再沿路径硬切</strong>。若路径刚好走在「左右几乎相同」的像素上，刀口就几乎看不见；若错位严重，缝会绕开「差得离谱」的竖杆交汇处。</p>
+
+    <h3>代价图</h3>
+    <p>重叠区每个像素算一个代价，常见最简单定义：</p>
+    <p class="formula">cost(x, y) = |Gray<sub>L</sub>(x, y) − Gray<sub>R</sub>(x, y)|</p>
+    <p>差越大 → 越不适合当接缝。还可以加上梯度差等，让缝更爱贴着边缘走（类似 seam carving 的能量）。</p>
+
+    <h3>动态规划（DP）找竖缝</h3>
+    <p>约束：从上到下，每行选一个 x；相邻行的 x 最多左右偏 1（缝不能横跳）。目标：整条路径代价之和最小。</p>
+    <p>算法直觉（和你玩过的「最短路」一样）：</p>
+    <ol>
+      <li>第一行：累计代价 = 该像素代价。</li>
+      <li>往下走：当前位置累计 = 自身代价 + 上一行三个邻居（左上/正上/右上）里最小的那个。</li>
+      <li>记下来「我是从哪个邻居来的」。</li>
+      <li>最后一行取最小，再回溯整条缝。</li>
+    </ol>
+    <figure>
+      <img src="assets/figures/ch10_seam_cost.png" alt="代价图与 DP 接缝">
+      <figcaption>图 10-6　左：重叠区代价（亮=差大）与青色最优缝。右：沿缝硬切。脚本里的合成图故意留了一条「低差走廊」，缝会倾向从那里穿过。</figcaption>
+    </figure>
+
+    <h3>图割（Graph Cut）一句话</h3>
+    <p>把每个重叠像素看成图上的节点：连到「左标签 / 右标签」的边表示「归谁」的代价，像素之间的边表示「邻居标签不同」的惩罚。求最小割，等价于给每个像素贴左或右标签，使总代价最小。比「每行一个 x」的竖缝更自由（可以围出不规则区域），算得也更重。OpenCV 的 <code>detail::GraphCutSeamFinder</code> 就是这一路。本篇用 DP 竖缝建立直觉即可。</p>
+    <div class="callout note">
+      <p>找缝解决「刀口放哪」；羽化/多频段解决「刀口怎么抹」。常组合：先找缝得到标签图，再在缝附近做很窄的多频段融合——既少重影，又淡色差。</p>
+    </div>
+
+    <h2 id="compare">三种结果对照</h2>
+    <p>同一对合成图，三种进阶策略并排：</p>
+    <figure>
+      <img src="assets/figures/ch10_three_results.png" alt="羽化、接缝硬切、多频段三种结果">
+      <figcaption>图 10-7　① 线性羽化：色差柔，错位处仍可能糊。② 低代价接缝硬切：细节清，缝若没藏好仍可能有刀口。③ 多频段：常作为默认「好看」方案。没有万能第一名，取决于场景误差类型。</figcaption>
+    </figure>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>方法</th>
+            <th>色差刀口</th>
+            <th>几何错位</th>
+            <th>计算量</th>
+            <th>一句话</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>硬切（固定中线）</td>
+            <td>容易露</td>
+            <td>不糊，但缝明显</td>
+            <td>极低</td>
+            <td>调试几何时很好用</td>
+          </tr>
+          <tr>
+            <td>平均</td>
+            <td>冲淡一点</td>
+            <td>重影最明显</td>
+            <td>极低</td>
+            <td>几乎只作反面教材</td>
+          </tr>
+          <tr>
+            <td>羽化</td>
+            <td>较好</td>
+            <td>过渡带仍可糊</td>
+            <td>低</td>
+            <td>先调半宽建立直觉</td>
+          </tr>
+          <tr>
+            <td>找缝 + 硬切</td>
+            <td>依赖缝质量</td>
+            <td>通常更干净</td>
+            <td>中</td>
+            <td>差得大的地方绕开</td>
+          </tr>
+          <tr>
+            <td>多频段</td>
+            <td>很好</td>
+            <td>细节保留较好</td>
+            <td>中高</td>
+            <td>全景默认常客</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="run">运行脚本</h2>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <pre class="terminal"><code>source .venv/bin/activate   # 若尚未激活
+MPLCONFIGDIR=/tmp/mpl-cache python code/ch10_blend.py</code></pre>
+      <p>会写出 <code>ch10_overlap_setup.png</code>、<code>ch10_hard_vs_avg_vs_feather.png</code>、<code>ch10_feather_weights.png</code>、<code>ch10_pyramid_idea.png</code>、<code>ch10_seam_cost.png</code>、<code>ch10_three_results.png</code>、<code>ch10_multiband_result.png</code>，以及你的 <code>ch10_my_feather.png</code>。</p>
+    </div>
+
+    <h2 id="edit">改这里</h2>
+    <p>打开 <a href="code/ch10_blend.py"><code>code/ch10_blend.py</code></a>，顶部有两处旋钮，只影响 <code>ch10_my_feather.png</code>（以及你重新生成时的观感）：</p>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>把 <code>FEATHER_HALF_WIDTH</code> 改成 <code>5</code>：过渡极窄，接近硬切，色差刀口会更明显。</li>
+        <li>再改成 <code>80</code>：过渡很宽，重叠带更像「大范围平均」，错位竖杆的双影带变宽。</li>
+        <li>把 <code>MISALIGN_PX</code> 从 <code>8</code> 改到 <code>0</code>：几何对齐时，平均/羽化也会好看很多——体会「融合救不了糟糕对齐，但对齐好了融合更轻松」。</li>
+        <li>把 <code>MISALIGN_PX</code> 拉到 <code>16</code>，对比 <code>ch10_seam_cost.png</code>：代价图上高亮竖带更宽，接缝会更用力去蹭低差走廊。</li>
+      </ol>
+    </div>
+
+    <h2 id="check">自测</h2>
+    <details class="quiz">
+      <summary>1. 为什么「平均」常常比「硬切」看起来更糊？</summary>
+      <p>平均在重叠区始终 50/50 混合。只要左右有几何偏差，同一物体会叠出双影；硬切每个像素只取一侧，不会半透明重影，但可能留下刀口。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. 羽化权重为什么通常要求 wl + wr = 1？</summary>
+      <p>这样混合不会整体变暗或变亮（忽略曝光差时）。若两边权重之和常小于 1，重叠区会发灰发暗。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. 多频段融合相对单层羽化，核心多做了哪一步？</summary>
+      <p>把图像拆成不同频率层，低频用宽过渡、高频用窄过渡，再重建。从而同时照顾色差与细节。</p>
+    </details>
+    <details class="quiz">
+      <summary>4. 动态规划找竖缝时，「相邻行 x 最多差 1」是为了什么？</summary>
+      <p>让接缝空间上连续，不能这一行在最左、下一行突然跳到最右（那会留下锯齿或断裂感）。也把搜索变成经典的逐行最短路。</p>
+    </details>
+    <details class="quiz">
+      <summary>5. 若两图重叠区有一根错位很严重的电线杆，你更倾向先做什么？</summary>
+      <p>优先改善对齐（或接受视差限制）；融合只能掩盖，不能凭空造出正确几何。找缝可绕开最差区域，多频段可减轻糊感，但大错位仍会露馅。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>融合仍可能败给<strong>曝光跳变</strong>和<strong>运动鬼影</strong>。下一篇看曝光补偿基本做法、失败图库，以及拍摄时就能避开的坑。</p>
+    <p><a href="11-exposure.html">第 11 篇 · 曝光补偿、鬼影与常见失败</a>（待写）</p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="09-projection.html">上一篇</a>
+      <a href="index.html">目录</a>
+      <a href="11-exposure.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+      var MUTED = "#5c564c";
+      var canvas = document.getElementById("feather-demo");
+      var widthSlider = document.getElementById("feather-width");
+      var shiftSlider = document.getElementById("feather-shift");
+      var widthOut = document.getElementById("feather-out");
+      var shiftOut = document.getElementById("feather-shift-out");
+      var readout = document.getElementById("feather-readout");
+      var resetBtn = document.getElementById("feather-reset");
+
+      function surface() {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var width = canvas.clientWidth || 640;
+        var height = canvas.clientHeight || 280;
+        var pw = Math.round(width * dpr);
+        var ph = Math.round(height * dpr);
+        if (canvas.width !== pw || canvas.height !== ph) {
+          canvas.width = pw;
+          canvas.height = ph;
+        }
+        var ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(0, 0, width, height);
+        return { ctx: ctx, width: width, height: height };
+      }
+
+      function lerp(a, b, t) {
+        return a + (b - a) * t;
+      }
+
+      function draw() {
+        var s = surface();
+        var ctx = s.ctx;
+        var W = s.width;
+        var H = s.height;
+        var half = parseInt(widthSlider.value, 10);
+        var shift = parseInt(shiftSlider.value, 10);
+        widthOut.textContent = half + " px";
+        shiftOut.textContent = shift + " px";
+
+        var x0 = Math.floor(W * 0.28);
+        var x1 = Math.floor(W * 0.72);
+        var mid = (x0 + x1) / 2;
+        var padY = 28;
+
+        // 逐列羽化色带
+        for (var x = 0; x < W; x++) {
+          var wL;
+          if (x < x0) wL = 1;
+          else if (x >= x1) wL = 0;
+          else wL = Math.max(0, Math.min(1, (mid + half - x) / (2 * half)));
+
+          // WAVE #c24d28 ↔ TEAL #0e6b66，按左权重插值
+          var r = Math.round(lerp(14, 194, wL));
+          var g = Math.round(lerp(107, 77, wL));
+          var b = Math.round(lerp(102, 40, wL));
+          ctx.fillStyle = "rgb(" + r + "," + g + "," + b + ")";
+          ctx.fillRect(x, padY, 1, H - padY * 2 - 36);
+        }
+
+        // 重叠区边界
+        ctx.strokeStyle = MUTED;
+        ctx.setLineDash([5, 4]);
+        ctx.beginPath();
+        ctx.moveTo(x0, padY);
+        ctx.lineTo(x0, H - padY - 36);
+        ctx.moveTo(x1, padY);
+        ctx.lineTo(x1, H - padY - 36);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // 错位竖线：左杆 / 右杆，羽化带里半透明叠出双影感
+        var pole = mid - 10;
+        ctx.lineWidth = 5;
+        ctx.strokeStyle = "rgba(194,77,40,0.95)";
+        ctx.beginPath();
+        ctx.moveTo(pole, padY + 12);
+        ctx.lineTo(pole, H - padY - 48);
+        ctx.stroke();
+        ctx.strokeStyle = "rgba(14,107,102,0.85)";
+        ctx.beginPath();
+        ctx.moveTo(pole + shift, padY + 12);
+        ctx.lineTo(pole + shift, H - padY - 48);
+        ctx.stroke();
+
+        // 权重示意曲线
+        var base = H - 28;
+        ctx.strokeStyle = WAVE;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        for (var x2 = 0; x2 < W; x2++) {
+          var wl;
+          if (x2 < x0) wl = 1;
+          else if (x2 >= x1) wl = 0;
+          else wl = Math.max(0, Math.min(1, (mid + half - x2) / (2 * half)));
+          var y = base - wl * 22;
+          if (x2 === 0) ctx.moveTo(x2, y);
+          else ctx.lineTo(x2, y);
+        }
+        ctx.stroke();
+        ctx.strokeStyle = TEAL;
+        ctx.beginPath();
+        for (var x3 = 0; x3 < W; x3++) {
+          var wr;
+          if (x3 < x0) wr = 0;
+          else if (x3 >= x1) wr = 1;
+          else wr = 1 - Math.max(0, Math.min(1, (mid + half - x3) / (2 * half)));
+          var y2 = base - wr * 22;
+          if (x3 === 0) ctx.moveTo(x3, y2);
+          else ctx.lineTo(x3, y2);
+        }
+        ctx.stroke();
+
+        ctx.fillStyle = MUTED;
+        ctx.font = "13px sans-serif";
+        ctx.fillText("橙=左权重  青=右权重", 12, 20);
+
+        var tip;
+        if (half <= 10) tip = "半宽很小：接近硬切，色差刀口更明显。";
+        else if (half >= 70) tip = "半宽很大：过渡接近大范围平均，错位双影带变宽。";
+        else tip = "中等半宽：色差被抹开；若错位大，过渡带里仍能看到双杆。";
+        if (shift === 0) tip += " 当前错位为 0，双影消失——融合立刻好看很多。";
+        readout.textContent = tip;
+      }
+
+      widthSlider.addEventListener("input", draw);
+      shiftSlider.addEventListener("input", draw);
+      resetBtn.addEventListener("click", function () {
+        widthSlider.value = "35";
+        shiftSlider.value = "8";
+        draw();
+      });
+      window.addEventListener("resize", draw);
+      draw();
+    })();
+  </script>
+</body>
+</html>

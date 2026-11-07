@@ -1,0 +1,727 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 25 篇 · 视频拼接与时空一致性</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        拼接与防抖 · 图像视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="24-3d-stabilize.html">第 24 篇</a>
+        <a href="25-video-stitch.html" aria-current="page">第 25 篇</a>
+        <a href="26-capstone.html">第 26 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 25 篇 · 视频 · 约 50 分钟</p>
+    <h1>视频拼接与时空一致性</h1>
+    <p class="lede">静态全景拼一张图就结束；多路视频是「每一帧都要拼，还要连着看」。若把第 8–11 篇的流水线原样套到每一帧，接缝会闪、楼边会抖，像缝在跳舞。本篇先看失败现象，再讲时间戳同步、帧间 H 平滑、接缝时序稳定，最后给出最小可行做法和难点地图。</p>
+    <div class="meta">
+      <span class="pill">先读：第 8–11 篇（拼接流水线）、第 19 篇（稳像直觉）</span>
+      <span class="pill">下一篇：端到端实战</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#why-not">为什么不能逐帧独立拼</a></li>
+        <li><a href="#sync">时间戳同步</a></li>
+        <li><a href="#h-smooth">帧间 H 平滑</a></li>
+        <li><a href="#seam">接缝时序稳定</a></li>
+        <li><a href="#flicker">闪烁与「缝跳舞」</a></li>
+        <li><a href="#try">在网页里拧一拧</a></li>
+        <li><a href="#mvp">最小可行做法</a></li>
+        <li><a href="#map">难点地图</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改参数再运行</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="why-not">为什么不能逐帧独立拼</h2>
+    <p>图片拼接回答的是空间问题：两张（或多张）图如何对齐、如何藏缝。视频拼接多了一个时间轴：观众会<strong>连续看</strong>第 t、t+1、t+2 帧。人眼对「同一条边在画面里左右蹭」极其敏感——哪怕每帧单独看都还过得去，连起来也会难受。</p>
+    <p>「逐帧独立拼」指的是：对每一时刻单独跑一遍静态流水线——估一个 H、求一条缝、融合——<strong>完全不管上一帧用过什么</strong>。问题在于：</p>
+    <ul>
+      <li>特征匹配与 RANSAC 有随机性，估出的 H 每帧会抖几像素；</li>
+      <li>接缝算法每帧重算，最优缝可能跳到另一条路径；</li>
+      <li>两路曝光若各自自动调，接缝两侧亮度还会一明一暗。</li>
+    </ul>
+    <p>空间上「对齐了」不等于时间上「稳」。本篇把后半句叫做<strong>时空一致性</strong>：同一物理结构，在相邻帧里相对拼缝、相对画布的位置应平滑变化。</p>
+    <figure>
+      <img src="assets/figures/ch25_independent_fail.png" alt="上排独立估H楼边跳动，下排平滑后稳定">
+      <figcaption>图 25-1　上：每帧独立估相对平移（代表 H），楼边/标尺相对橙缝左右跳。下：对估计做滑动平均后，同一组帧稳得多。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/images/ch25_frame_compare.png" alt="同一帧独立H与平滑H对照">
+      <figcaption>图 25-2　同一时刻的硬拼对照。差别往往只有几个像素，连播时却像画面在搓。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>类比：你用两台摄像机拍同一条街，再「拼成一条更宽的街景视频」。如果每一秒都重新量两台机器的相对位置，量尺偶尔差几毫米，拼出来的马路中线就会在屏幕里来回扭——量每次都「差不多对」，但观众只看见扭。</p>
+    </div>
+
+    <h2 id="sync">时间戳同步</h2>
+    <p>多路视频首先要回答：左相机的这一帧，该和右相机的<strong>哪一帧</strong>配对？若两路帧率相同却启动时刻差了几十毫秒，或一路掉帧，按「第 i 帧对第 i 帧」硬配，叠在一起的其实是<strong>不同瞬间</strong>的世界——运动物体、手持晃动都会对不齐。</p>
+    <p>最小做法：</p>
+    <ol>
+      <li>每帧带时间戳（硬件触发最好；软件用采集时钟也行）；</li>
+      <li>选一路为时间主轴；</li>
+      <li>对主轴每一帧，在另一路里找时间戳最近的帧（最近邻）；要求更高时，可对右路做时间插值再拼。</li>
+    </ol>
+    <p class="formula">j*(t) = arg min<sub>j</sub> |t<sub>right</sub>[j] − t<sub>left</sub>|</p>
+    <p>白话：给定左帧时刻 t，在右路时间戳里找离 t 最近的那个下标 j。误差超过半帧，就要警惕掉帧或时钟漂移。</p>
+    <figure>
+      <img src="assets/figures/ch25_timestamp_sync.png" alt="两路时间轴与同步误差对比">
+      <figcaption>图 25-3　上：虚线是「按索引硬配」，实线是「按时间戳最近邻」。下：硬配误差约等于固定偏移；同步后误差显著下降。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>硬件上常见：多相机共用触发（genlock）、或录一份公共 timecode。软件上若只有「大概同时按了录制」，就要靠拍一下手掌/闪光做事件对齐，再估固定偏移。本篇脚本用合成偏移演示最近邻，不涉及真实 IMU。</p>
+    </div>
+
+    <h2 id="h-smooth">帧间 H 平滑</h2>
+    <p>同步之后，每一对帧仍要一个几何变换把右图变到左图（或共同画布）。静态拼接里，这个 H 估一次就够；视频里每一帧都估一次，噪声会变成<strong>画面抖动</strong>。</p>
+    <p>直觉：真实相对姿态通常<strong>缓慢</strong>变化（相机刚体、云台缓动）；观测噪声是高频。于是可以对 H 的参数做低通——最简单是滑动平均。本篇演示把 H 简化成水平平移 tx（够说明问题；完整 3×3 可对元素平滑，或先分解成旋转/平移再平滑）。</p>
+    <p class="formula">tx̃[t] = (1/W) Σ<sub>k=−r…r</sub> tx[t+k]，　W = 2r+1</p>
+    <p>白话：看前后共 W 帧的估计，取平均当成本帧使用的平移。W 越大越稳，但突变（真转弯）会被抹钝——稳像里「跟手 vs 稳」的老权衡。</p>
+    <figure>
+      <img src="assets/figures/ch25_h_smooth.png" alt="tx真值、带噪估计与滑动平均及差分">
+      <figcaption>图 25-4　上：灰色真实缓慢曲线，橙色带噪逐帧估计，青色滑动平均。下：|Δtx| 平滑后明显变小——这就是「少跳」的量化。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>进阶才会碰到：单应在流形上，直接平均矩阵元素不完全严谨；可用四元数/李代数，或卡尔曼滤波，或与陀螺仪融合。零基础先记住：<strong>不要把生的逐帧 H 直接拿去 warp 出片</strong>。</p>
+    </div>
+
+    <h2 id="seam">接缝时序稳定</h2>
+    <p>第 10 篇用代价图找一条「穿过差异小的地方」的缝。视频里若每帧重跑一遍动态规划，缝的横坐标可能突然跳十几像素——尤其有人影、车灯掠过重叠区时。观众会看见一条「裂缝」在画面里左右窜，俗称<strong>缝跳舞</strong>。</p>
+    <p>最小对策，从易到难：</p>
+    <ul>
+      <li><strong>锁缝</strong>：标定后重叠大致固定，直接用一条固定竖缝（或固定折线），只做羽化；</li>
+      <li><strong>平滑缝</strong>：仍每帧求缝，但对 seam_x(y) 或代表性横坐标做时间滑动平均；</li>
+      <li><strong>约束求解</strong>：让本帧缝靠近上一帧缝（加时序正则），再求最优——算力更大，效果更好。</li>
+    </ul>
+    <figure>
+      <img src="assets/figures/ch25_seam_dance.png" alt="接缝横坐标跳动与平滑对照">
+      <figcaption>图 25-5　左：独立求缝出现尖峰；平滑后贴近理想缓慢轨迹。右：若干帧上橙/青竖线位置——跳舞一目了然。</figcaption>
+    </figure>
+
+    <h2 id="flicker">闪烁与「缝跳舞」</h2>
+    <p>两者常一起出现，但机理不同，别混着调参：</p>
+    <div class="table-scroll">
+      <table>
+        <caption>表 25-1　两种「难看」</caption>
+        <thead>
+          <tr><th>现象</th><th>你看见什么</th><th>常见主因</th><th>先动哪里</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>几何闪 / 搓边</td><td>楼边、标线在搓</td><td>H 未平滑、未同步</td><td>同步 + 平滑 H</td></tr>
+          <tr><td>缝跳舞</td><td>一条分界线左右窜</td><td>每帧重算缝</td><td>锁缝 / 平滑缝</td></tr>
+          <tr><td>亮度闪</td><td>接缝一明一暗</td><td>两路 AE 不同步</td><td>曝光/增益对齐（第 11 篇）</td></tr>
+          <tr><td>局部撕裂</td><td>近物双影、斜切</td><td>视差、Rolling Shutter</td><td>见难点地图</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <figure>
+      <img src="assets/figures/ch25_flicker_compare.png" alt="接缝邻域帧差曲线与闪烁来源说明">
+      <figcaption>图 25-6　左：接缝邻域的帧差，独立 H 明显高于平滑 H（合成里还叠了轻微增益抖动）。右：闪烁来源清单。</figcaption>
+    </figure>
+
+    <h2 id="try">在网页里拧一拧</h2>
+    <p>不必先装 Python。下面用合成的「相对平移曲线」和「接缝位置」演示：噪声大时如何跳，窗口加大后如何稳，以及时间偏移如何搞砸配对。</p>
+
+    <h3>H 噪声 vs 平滑窗口</h3>
+    <p>橙线是带噪估计，青线是滑动平均。加大噪声看毛刺；加大窗口看青线变钝。下方小画画的是用当前 tx 拼出的「楼边相对接缝」位置——噪越大，橙点越晃。</p>
+    <div class="playground">
+      <canvas id="h-demo" class="demo" width="820" height="320" aria-label="H平滑示意"></canvas>
+      <div class="controls">
+        <label for="noise">H 估计噪声</label>
+        <input id="noise" type="range" min="0" max="6" step="0.2" value="2.8">
+        <output id="noise-out" for="noise">2.8 px</output>
+        <label for="hwin">平滑窗口</label>
+        <input id="hwin" type="range" min="1" max="15" step="2" value="7">
+        <output id="hwin-out" for="hwin">7</output>
+      </div>
+      <div class="actions">
+        <button type="button" class="primary" id="h-play" aria-pressed="false">播放</button>
+        <button type="button" id="h-reset">恢复默认</button>
+      </div>
+      <p class="readout" id="h-readout" aria-live="polite"></p>
+    </div>
+
+    <h3>缝跳舞 vs 锁缝</h3>
+    <p>打开「独立求缝」看竖线乱跳；打开「平滑缝」或「锁缝」对比。尖峰模拟有人影穿过重叠区时代价图突然改主意。</p>
+    <div class="playground">
+      <canvas id="seam-demo" class="demo" width="820" height="280" aria-label="接缝时序示意"></canvas>
+      <div class="controls">
+        <label for="swin">缝平滑窗口</label>
+        <input id="swin" type="range" min="1" max="15" step="2" value="9">
+        <output id="swin-out" for="swin">9</output>
+      </div>
+      <div class="actions">
+        <button type="button" class="primary" id="seam-mode-raw" aria-pressed="true">独立求缝</button>
+        <button type="button" id="seam-mode-smooth" aria-pressed="false">平滑缝</button>
+        <button type="button" id="seam-mode-lock" aria-pressed="false">锁缝</button>
+      </div>
+      <p class="readout" id="seam-readout" aria-live="polite"></p>
+    </div>
+
+    <h3>时间偏移</h3>
+    <p>拖动右路时间偏移，看「按索引硬配」与「最近邻」的误差条谁更矮。</p>
+    <div class="playground">
+      <canvas id="sync-demo" class="demo" width="820" height="260" aria-label="时间戳同步示意"></canvas>
+      <div class="controls">
+        <label for="off">右路偏移</label>
+        <input id="off" type="range" min="0" max="66" step="1" value="33">
+        <output id="off-out" for="off">33 ms</output>
+      </div>
+      <p class="readout" id="sync-readout" aria-live="polite"></p>
+    </div>
+
+    <h2 id="mvp">最小可行做法</h2>
+    <p>若你要做一个「能交作业 / 能演示」的双路拼接视频，不必一上来上光束法与深度学习。按这条链就够建立正确体感：</p>
+    <figure>
+      <img src="assets/figures/ch25_pipeline.png" alt="视频拼接最小可行流水线五步">
+      <figcaption>图 25-7　静态流水线缺的是同步，以及 H、接缝两处时序约束。缺它们就会闪烁、缝跳舞。</figcaption>
+    </figure>
+    <ol>
+      <li><strong>采集</strong>：尽量硬件同步；否则记录时间戳，事后最近邻对齐。</li>
+      <li><strong>几何</strong>：每帧（或每隔几帧）估 H；对参数做滑动平均 / 指数平滑。</li>
+      <li><strong>接缝</strong>：先锁一条缝验证；再尝试平滑缝。羽化宽度固定，避免每帧改。</li>
+      <li><strong>外观</strong>：对重叠区做简单增益对齐（第 11 篇），减轻亮度闪。</li>
+      <li><strong>输出</strong>：统一画布尺寸与帧率；检查接缝邻域的帧差曲线是否下降。</li>
+    </ol>
+    <div class="callout note">
+      <p>评价小技巧：在拼缝两侧各取一条竖带，算相邻帧灰度差的均值。平滑 H / 锁缝后，这条曲线通常会掉一截——图 25-6 左就是这种度量的合成版。</p>
+    </div>
+
+    <h2 id="map">难点地图</h2>
+    <p>最小做法解决的是「时间上别自己吓自己」。下面这些问题本篇只点名，实战里会反复撞上——知道边界，比假装全能重要。</p>
+    <figure>
+      <img src="assets/figures/ch25_difficulty_map.png" alt="视频拼接难点与对策对照表">
+      <figcaption>图 25-8　青绿列是本篇级最小做法；橙列是仍属难点、往往要单独开题的方向。</figcaption>
+    </figure>
+    <ul>
+      <li><strong>Rolling Shutter</strong>：两路行曝光时刻不同，快速晃时局部像被撕斜——需要行时间模型（第 21、23 篇）。</li>
+      <li><strong>大视差</strong>：近处行人无法被单个 H 对齐，缝再稳也有双影——要深度或网格（第 24 篇相关）。</li>
+      <li><strong>跨缝运动物体</strong>：人从左相机走进右相机，代价图会「追着人跑」——需要物体感知或时序约束更强的缝。</li>
+    </ul>
+
+    <h2 id="run">运行脚本</h2>
+    <p>脚本用 NumPy 合成双路序列，演示同步、H 平滑、缝跳舞与闪烁对照，并写出全部课文图。</p>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <pre class="terminal"><code>source .venv/bin/activate   # 若尚未激活
+MPLCONFIGDIR=/tmp/mpl-cache python code/ch25_video_stitch.py</code></pre>
+      <p>终端应出现「自检通过」，并写出：</p>
+      <ul>
+        <li><code>assets/figures/ch25_independent_fail.png</code>、<code>ch25_timestamp_sync.png</code>、<code>ch25_h_smooth.png</code>、<code>ch25_seam_dance.png</code>、<code>ch25_flicker_compare.png</code>、<code>ch25_pipeline.png</code>、<code>ch25_difficulty_map.png</code></li>
+        <li><code>assets/images/ch25_frame_compare.png</code></li>
+        <li>跟随「改这里」的 <code>ch25_my_h_smooth.png</code>、<code>ch25_my_seam.png</code>、<code>ch25_my_sync.png</code></li>
+      </ul>
+    </div>
+
+    <h2 id="edit">改参数再运行</h2>
+    <p>打开 <a href="code/ch25_video_stitch.py"><code>code/ch25_video_stitch.py</code></a>，只改顶部「改这里」。课文对照图仍按固定参数重画；你的三张 <code>ch25_my_*.png</code> 会跟着变。</p>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>把 <code>H_NOISE_STD</code> 从 <code>2.8</code> 改成 <code>0.5</code>，再改成 <code>5.0</code>，对比 <code>ch25_my_h_smooth.png</code> 里橙线毛刺与 |Δtx|。</li>
+        <li>把 <code>H_SMOOTH_WINDOW</code> 改成 <code>3</code> 与 <code>15</code>：窗口太小仍抖，太大则青线跟不上真实正弦弯。</li>
+        <li>把 <code>SEAM_SMOOTH_WINDOW</code> 改大，看 <code>ch25_my_seam.png</code> 里尖峰是否被抹平。</li>
+        <li>把 <code>TIME_OFFSET_MS</code> 改成 <code>0</code>、<code>16</code>、<code>50</code>，观察 <code>ch25_my_sync.png</code> 里青绿柱是否始终低于灰柱。</li>
+      </ol>
+    </div>
+
+    <h2 id="check">自测</h2>
+    <p>先自己答，再展开。</p>
+    <details class="quiz">
+      <summary>1. 为什么「每一帧单独拼得很整齐」仍可能做出很难看的视频？</summary>
+      <p>因为人眼连着看。帧与帧之间的 H、接缝、曝光若不连续，就会出现搓边、缝跳舞、闪烁。空间正确不等于时间稳定。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. 两路视频按「第 i 帧对第 i 帧」配对，在什么情况下会错？该怎么做最小修正？</summary>
+      <p>启动时刻不同、掉帧、时钟漂移时会错。应用时间戳做最近邻（或插值）对齐，而不是相信帧序号。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. 帧间 H 平滑在权衡什么？窗口是不是越大越好？</summary>
+      <p>权衡「稳」与「跟手」。窗口越大高频抖越少，但对真实快速相对运动的响应越慢，弯会被抹钝。要按场景选。</p>
+    </details>
+    <details class="quiz">
+      <summary>4. 「缝跳舞」和「亮度闪烁」主因一样吗？各先动哪一刀？</summary>
+      <p>不一样。缝跳舞先锁缝或平滑缝坐标；亮度闪先做曝光/增益对齐。H 未平滑则两者都可能被放大。</p>
+    </details>
+    <details class="quiz">
+      <summary>5. 最小可行视频拼接流水线，相对静态拼接多了哪两类步骤？</summary>
+      <p>多了时间同步，以及对 H、接缝（必要时还有曝光）的时序约束/平滑。少它们就容易闪烁、缝跳舞。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>下一篇把拼接、二维视觉防抖、以及有 IMU 时的陀螺辅助 / RS 校正收成三则端到端实战：参数表、预期效果与自检清单。</p>
+    <p><a href="26-capstone.html">第 26 篇 · 端到端实战三则</a>（待写）</p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="24-3d-stabilize.html">上一篇</a>
+      <a href="index.html">目录</a>
+      <a href="26-capstone.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+      var MUTED = "#5c564c";
+      var INK = "#1c1915";
+      var N = 48;
+      var playing = false;
+      var frame = 0;
+      var raf = null;
+
+      function surface(canvas) {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var width = canvas.clientWidth || 640;
+        var height = canvas.clientHeight || 300;
+        var pw = Math.round(width * dpr);
+        var ph = Math.round(height * dpr);
+        if (canvas.width !== pw || canvas.height !== ph) {
+          canvas.width = pw;
+          canvas.height = ph;
+        }
+        var ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(0, 0, width, height);
+        return { ctx: ctx, width: width, height: height };
+      }
+
+      function trueTx(i) {
+        return 160 + 6 * Math.sin((2 * Math.PI * i) / 28) + 1.2 * Math.sin((2 * Math.PI * i) / 11);
+      }
+
+      function mulberry32(a) {
+        return function () {
+          var t = (a += 0x6d2b79f5);
+          t = Math.imul(t ^ (t >>> 15), t | 1);
+          t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+          return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        };
+      }
+
+      function gauss(rng) {
+        var u = 1 - rng();
+        var v = 1 - rng();
+        return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+      }
+
+      function movingAvg(arr, win) {
+        var w = Math.max(1, win | 0);
+        if (w % 2 === 0) w += 1;
+        var r = (w - 1) / 2;
+        var out = new Array(arr.length);
+        for (var i = 0; i < arr.length; i++) {
+          var s = 0;
+          for (var k = -r; k <= r; k++) {
+            var j = Math.max(0, Math.min(arr.length - 1, i + k));
+            s += arr[j];
+          }
+          out[i] = s / w;
+        }
+        return out;
+      }
+
+      function meanAbsDiff(arr) {
+        var s = 0;
+        for (var i = 1; i < arr.length; i++) s += Math.abs(arr[i] - arr[i - 1]);
+        return s / Math.max(1, arr.length - 1);
+      }
+
+      /* ---- H demo ---- */
+      var noiseEl = document.getElementById("noise");
+      var hwinEl = document.getElementById("hwin");
+      var noiseOut = document.getElementById("noise-out");
+      var hwinOut = document.getElementById("hwin-out");
+      var hRead = document.getElementById("h-readout");
+      var hCanvas = document.getElementById("h-demo");
+      var hPlay = document.getElementById("h-play");
+      var hReset = document.getElementById("h-reset");
+
+      function buildObs(noise) {
+        var rng = mulberry32(21);
+        var obs = [];
+        for (var i = 0; i < N; i++) obs.push(trueTx(i) + noise * gauss(rng));
+        return obs;
+      }
+
+      function drawH() {
+        var noise = parseFloat(noiseEl.value);
+        var win = parseInt(hwinEl.value, 10);
+        noiseOut.textContent = noise.toFixed(1) + " px";
+        hwinOut.textContent = String(win);
+        var obs = buildObs(noise);
+        var sm = movingAvg(obs, win);
+        var s = surface(hCanvas);
+        var ctx = s.ctx;
+        var W = s.width;
+        var H = s.height;
+        var padL = 44;
+        var padR = 16;
+        var padT = 28;
+        var mid = H * 0.48;
+        var plotH = mid - padT - 8;
+        var plotW = W - padL - padR;
+
+        function xAt(i) {
+          return padL + (i / (N - 1)) * plotW;
+        }
+        function yAt(v) {
+          return padT + plotH - ((v - 150) / 30) * plotH;
+        }
+
+        ctx.strokeStyle = "#e6dccb";
+        ctx.lineWidth = 1;
+        for (var g = 0; g < 4; g++) {
+          var yy = padT + (plotH * g) / 3;
+          ctx.beginPath();
+          ctx.moveTo(padL, yy);
+          ctx.lineTo(W - padR, yy);
+          ctx.stroke();
+        }
+
+        function strokeSeries(arr, color, lw) {
+          ctx.beginPath();
+          for (var i = 0; i < N; i++) {
+            var x = xAt(i);
+            var y = yAt(arr[i]);
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          }
+          ctx.strokeStyle = color;
+          ctx.lineWidth = lw;
+          ctx.stroke();
+        }
+
+        var truth = [];
+        for (var i = 0; i < N; i++) truth.push(trueTx(i));
+        strokeSeries(truth, MUTED, 1.4);
+        strokeSeries(obs, WAVE, 1.1);
+        strokeSeries(sm, TEAL, 2.2);
+
+        // playhead
+        var px = xAt(frame);
+        ctx.strokeStyle = INK;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(px, padT);
+        ctx.lineTo(px, mid - 4);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // bottom: seam-relative building edge
+        var y0 = mid + 18;
+        var boxH = H - y0 - 16;
+        ctx.fillStyle = "#f3e6d8";
+        ctx.fillRect(padL, y0, plotW, boxH);
+        ctx.strokeStyle = "#2a241c";
+        ctx.strokeRect(padL, y0, plotW, boxH);
+        var seamX = padL + plotW * 0.55;
+        ctx.strokeStyle = TEAL;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(seamX, y0);
+        ctx.lineTo(seamX, y0 + boxH);
+        ctx.stroke();
+
+        var edgeRaw = seamX + (obs[frame] - 160) * 3.2;
+        var edgeSm = seamX + (sm[frame] - 160) * 3.2;
+        ctx.fillStyle = WAVE;
+        ctx.fillRect(edgeRaw - 3, y0 + 8, 6, boxH - 16);
+        ctx.fillStyle = TEAL;
+        ctx.globalAlpha = 0.75;
+        ctx.fillRect(edgeSm - 3, y0 + 8, 6, boxH - 16);
+        ctx.globalAlpha = 1;
+
+        ctx.fillStyle = MUTED;
+        ctx.font = "12px sans-serif";
+        ctx.fillText("灰=真实  橙=独立估计  青=平滑", padL, 18);
+        ctx.fillText("下：楼边相对接缝（橙抖 / 青稳）", padL, y0 - 4);
+
+        hRead.textContent =
+          "帧 " +
+          frame +
+          " · 独立 |Δtx| 均值 " +
+          meanAbsDiff(obs).toFixed(2) +
+          " px · 平滑后 " +
+          meanAbsDiff(sm).toFixed(2) +
+          " px";
+      }
+
+      function tick() {
+        if (!playing) return;
+        frame = (frame + 1) % N;
+        drawH();
+        raf = window.setTimeout(function () {
+          requestAnimationFrame(tick);
+        }, 70);
+      }
+
+      hPlay.addEventListener("click", function () {
+        playing = !playing;
+        hPlay.setAttribute("aria-pressed", playing ? "true" : "false");
+        hPlay.textContent = playing ? "暂停" : "播放";
+        if (playing) tick();
+        else if (raf) window.clearTimeout(raf);
+      });
+      hReset.addEventListener("click", function () {
+        noiseEl.value = "2.8";
+        hwinEl.value = "7";
+        frame = 0;
+        drawH();
+      });
+      noiseEl.addEventListener("input", drawH);
+      hwinEl.addEventListener("input", drawH);
+
+      /* ---- seam demo ---- */
+      var swinEl = document.getElementById("swin");
+      var swinOut = document.getElementById("swin-out");
+      var seamRead = document.getElementById("seam-readout");
+      var seamCanvas = document.getElementById("seam-demo");
+      var seamMode = "raw";
+      var btnRaw = document.getElementById("seam-mode-raw");
+      var btnSm = document.getElementById("seam-mode-smooth");
+      var btnLock = document.getElementById("seam-mode-lock");
+
+      function buildSeam() {
+        var rng = mulberry32(33);
+        var base = [];
+        var raw = [];
+        for (var i = 0; i < N; i++) {
+          var b = 200 + 5 * Math.sin((2 * Math.PI * i) / 30);
+          base.push(b);
+          raw.push(b + 2.8 * 1.4 * gauss(rng));
+        }
+        var jump = Math.floor(N / 3);
+        raw[jump] += 18;
+        raw[jump + 1] += 18;
+        return { base: base, raw: raw, sm: movingAvg(raw, parseInt(swinEl.value, 10)) };
+      }
+
+      function setSeamMode(mode) {
+        seamMode = mode;
+        btnRaw.setAttribute("aria-pressed", mode === "raw" ? "true" : "false");
+        btnSm.setAttribute("aria-pressed", mode === "smooth" ? "true" : "false");
+        btnLock.setAttribute("aria-pressed", mode === "lock" ? "true" : "false");
+        drawSeam();
+      }
+
+      function drawSeam() {
+        var win = parseInt(swinEl.value, 10);
+        swinOut.textContent = String(win);
+        var data = buildSeam();
+        var series =
+          seamMode === "raw" ? data.raw : seamMode === "smooth" ? data.sm : data.base.map(function () { return 200; });
+        var s = surface(seamCanvas);
+        var ctx = s.ctx;
+        var W = s.width;
+        var H = s.height;
+        var pad = 36;
+        var plotW = W - pad * 2;
+        var plotH = H * 0.55;
+
+        function xAt(i) {
+          return pad + (i / (N - 1)) * plotW;
+        }
+        function yAt(v) {
+          return 24 + plotH - ((v - 175) / 55) * plotH;
+        }
+
+        ctx.strokeStyle = "#e6dccb";
+        for (var g = 0; g < 4; g++) {
+          var yy = 24 + (plotH * g) / 3;
+          ctx.beginPath();
+          ctx.moveTo(pad, yy);
+          ctx.lineTo(W - pad, yy);
+          ctx.stroke();
+        }
+
+        function stroke(arr, color, lw, dash) {
+          ctx.beginPath();
+          for (var i = 0; i < N; i++) {
+            var x = xAt(i);
+            var y = yAt(arr[i]);
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          }
+          ctx.setLineDash(dash || []);
+          ctx.strokeStyle = color;
+          ctx.lineWidth = lw;
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+        stroke(data.base, MUTED, 1.2, [5, 4]);
+        stroke(data.raw, WAVE, 1.1);
+        stroke(series, TEAL, 2.2);
+
+        // strip preview
+        var y0 = H * 0.62;
+        var idxs = [0, Math.floor(N / 3), Math.floor(N / 3) + 1, Math.floor(N / 2), N - 1];
+        var rowH = (H - y0 - 12) / idxs.length;
+        for (var k = 0; k < idxs.length; k++) {
+          var idx = idxs[k];
+          var yy = y0 + k * rowH;
+          ctx.fillStyle = "#f3e6d8";
+          ctx.fillRect(pad, yy + 2, plotW, rowH - 4);
+          var sx = pad + ((series[idx] - 170) / 70) * plotW;
+          ctx.strokeStyle = TEAL;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(sx, yy + 2);
+          ctx.lineTo(sx, yy + rowH - 2);
+          ctx.stroke();
+          ctx.fillStyle = MUTED;
+          ctx.font = "11px sans-serif";
+          ctx.fillText("t=" + idx, 4, yy + rowH * 0.65);
+        }
+
+        var label =
+          seamMode === "raw" ? "独立求缝" : seamMode === "smooth" ? "平滑缝" : "锁缝(=200)";
+        seamRead.textContent =
+          label +
+          " · 独立 |Δseam| 均值 " +
+          meanAbsDiff(data.raw).toFixed(2) +
+          " · 当前模式 " +
+          meanAbsDiff(series).toFixed(2);
+      }
+
+      btnRaw.addEventListener("click", function () { setSeamMode("raw"); });
+      btnSm.addEventListener("click", function () { setSeamMode("smooth"); });
+      btnLock.addEventListener("click", function () { setSeamMode("lock"); });
+      swinEl.addEventListener("input", drawSeam);
+
+      /* ---- sync demo ---- */
+      var offEl = document.getElementById("off");
+      var offOut = document.getElementById("off-out");
+      var syncRead = document.getElementById("sync-readout");
+      var syncCanvas = document.getElementById("sync-demo");
+      var M = 12;
+      var DT = 1000 / 30;
+
+      function drawSync() {
+        var offset = parseFloat(offEl.value);
+        offOut.textContent = offset.toFixed(0) + " ms";
+        var left = [];
+        var right = [];
+        for (var i = 0; i < M; i++) {
+          left.push(i * DT);
+          right.push(i * DT + offset);
+        }
+        var bad = [];
+        var good = [];
+        var pairs = [];
+        for (var i = 0; i < M; i++) {
+          bad.push(Math.abs(right[i] - left[i]));
+          var best = 0;
+          var bestE = Infinity;
+          for (var j = 0; j < M; j++) {
+            var e = Math.abs(right[j] - left[i]);
+            if (e < bestE) {
+              bestE = e;
+              best = j;
+            }
+          }
+          good.push(bestE);
+          pairs.push(best);
+        }
+
+        var s = surface(syncCanvas);
+        var ctx = s.ctx;
+        var W = s.width;
+        var H = s.height;
+        var pad = 40;
+        var topH = H * 0.38;
+
+        // timelines
+        ctx.fillStyle = MUTED;
+        ctx.font = "12px sans-serif";
+        ctx.fillText("左", 8, 28);
+        ctx.fillText("右", 8, topH - 10);
+        var tMax = left[M - 1] + offset + 10;
+        function tx(t) {
+          return pad + (t / tMax) * (W - pad - 16);
+        }
+        for (var i = 0; i < M; i++) {
+          ctx.strokeStyle = WAVE;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(tx(left[i]), 18);
+          ctx.lineTo(tx(left[i]), 40);
+          ctx.stroke();
+          ctx.strokeStyle = TEAL;
+          ctx.beginPath();
+          ctx.moveTo(tx(right[i]), topH - 28);
+          ctx.lineTo(tx(right[i]), topH - 6);
+          ctx.stroke();
+        }
+        // sample links
+        for (var i = 0; i < M; i += 3) {
+          ctx.strokeStyle = "#c9b8a4";
+          ctx.setLineDash([4, 3]);
+          ctx.beginPath();
+          ctx.moveTo(tx(left[i]), 40);
+          ctx.lineTo(tx(right[i]), topH - 28);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.strokeStyle = TEAL;
+          ctx.lineWidth = 1.6;
+          ctx.beginPath();
+          ctx.moveTo(tx(left[i]), 40);
+          ctx.lineTo(tx(right[pairs[i]]), topH - 28);
+          ctx.stroke();
+        }
+
+        // bars
+        var baseY = H - 28;
+        var barH = H - topH - 50;
+        var maxE = Math.max(DT, offset, 1);
+        var bw = (W - pad - 16) / M;
+        for (var i = 0; i < M; i++) {
+          var x = pad + i * bw;
+          var hBad = (bad[i] / maxE) * barH;
+          var hGood = (good[i] / maxE) * barH;
+          ctx.fillStyle = "#c9b8a4";
+          ctx.fillRect(x + 2, baseY - hBad, bw * 0.4, hBad);
+          ctx.fillStyle = TEAL;
+          ctx.fillRect(x + bw * 0.45, baseY - hGood, bw * 0.4, hGood);
+        }
+        ctx.fillStyle = MUTED;
+        ctx.fillText("灰=按索引硬配误差  青=最近邻误差", pad, topH + 14);
+
+        var meanBad = bad.reduce(function (a, b) { return a + b; }, 0) / M;
+        var meanGood = good.reduce(function (a, b) { return a + b; }, 0) / M;
+        syncRead.textContent =
+          "平均误差：硬配 " + meanBad.toFixed(1) + " ms · 最近邻 " + meanGood.toFixed(1) + " ms";
+      }
+
+      offEl.addEventListener("input", drawSync);
+
+      window.addEventListener("resize", function () {
+        drawH();
+        drawSeam();
+        drawSync();
+      });
+
+      drawH();
+      drawSeam();
+      drawSync();
+    })();
+  </script>
+</body>
+</html>

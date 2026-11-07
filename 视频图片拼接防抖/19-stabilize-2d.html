@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 19 篇 · 二维视频防抖：轨迹平滑</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        拼接与防抖 · 图像视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="18-flow-viz.html">第 18 篇</a>
+        <a href="19-stabilize-2d.html" aria-current="page">第 19 篇</a>
+        <a href="20-crop-ois-eis.html">第 20 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 19 篇 · 防抖入门 · 约 55 分钟</p>
+    <h1>二维视频防抖：轨迹平滑</h1>
+    <p class="lede">手持视频为什么晃？因为每一帧相对上一帧都在「偷偷挪一点」。本篇把挪动估出来、串成一条相机路径，再把路径抹平滑，最后用「原路径相对平滑路径的差」把画面 warp 回去。你会看见：稳，来自路径差；过平滑，会漂、会吃掉视野。</p>
+    <div class="meta">
+      <span class="pill">先读：第 1–2 篇变换；光流跟踪有帮助</span>
+      <span class="pill">下一篇讲裁切比与 OIS / EIS</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#feel">先看现象：晃从哪来</a></li>
+        <li><a href="#pipeline">四步总览</a></li>
+        <li><a href="#pair">步骤 1：估帧间相似 / 仿射</a></li>
+        <li><a href="#path">步骤 2：累积成相机路径</a></li>
+        <li><a href="#smooth">步骤 3：滑动窗口平滑</a></li>
+        <li><a href="#comp">步骤 4：路径差补偿 warp</a></li>
+        <li><a href="#oversmooth">过平滑：漂与裁切</a></li>
+        <li><a href="#try">网页里拧路径</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改这里</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="feel">先看现象：晃从哪来</h2>
+    <p>把视频想成「一串连续的取景框」。你以为自己在慢慢向右跟拍，其实手还叠了高频小抖：左右颠、微微拧。</p>
+    <p>结果是：楼边在画面里跳、地平线来回拧。人眼对这种<strong>高频、无规律</strong>的运动特别敏感；故意的慢速运镜反而可以保留——那是叙事需要的。</p>
+    <figure>
+      <img src="assets/images/ch19_before_after.png" alt="晃动原片、补偿后有黑边、裁切后成片三行对照">
+      <figcaption>图 19-1　上：合成晃动原片（楼在框里跳）。中：按路径差补偿后，内容稳了，但边缘出现黑边。下：裁掉黑边后的成片。脚本还会写出 <code>ch19_shake_demo.mp4</code> / <code>ch19_stable_demo.mp4</code> 方便连播对比。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/images/ch19_frame_pair.png" alt="同一时刻稳前稳后并排">
+      <figcaption>图 19-2　同一帧：左晃动，右稳住并裁切。注意不是「换了一张图」，而是把原帧做了相似变换再裁边。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>本篇的「二维」是指：整幅画面用<strong>同一个</strong>相似或仿射变换来描述帧间运动。它假设场景近似平面、或相机运动以旋转/小平移为主。大景深、近物大视差时会不够——那是后面 3D 稳像的事。</p>
+    </div>
+
+    <h2 id="pipeline">四步总览</h2>
+    <p>经典二维视觉防抖可以拆成四句话。先记住流程，再逐段拆开。</p>
+    <figure>
+      <img src="assets/figures/ch19_pipeline.png" alt="估变换、累积路径、平滑、补偿四步流程图">
+      <figcaption>图 19-3　本篇主线：估帧间变换 → 累积路径 → 平滑 → 用路径差 warp。</figcaption>
+    </figure>
+    <ol>
+      <li><strong>估帧间变换</strong>：第 <em>i</em> 帧到第 <em>i+1</em> 帧，画面整体挪了多少、转了多少（相似 4 自由度，或仿射 6 自由度）。</li>
+      <li><strong>累积成路径</strong>：把每一小步加起来，得到相对第 0 帧的「相机走了多远」曲线。</li>
+      <li><strong>平滑路径</strong>：用滑动平均（或其它低通）压掉高频毛刺，保留慢趋势。</li>
+      <li><strong>补偿</strong>：原路径在平滑路径「旁边」偏了多少，就把这一帧朝反方向 warp 回去。</li>
+    </ol>
+    <p>一句话：<strong>稳，不是把运动全删掉，而是把运动改成你想要的那条更顺的曲线。</strong></p>
+
+    <h2 id="pair">步骤 1：估帧间相似 / 仿射</h2>
+    <p>两帧之间，多数像素在动，但「整体」往往像一块板在平移、旋转、略缩放。这正是第 2 篇的<strong>相似变换</strong>（转 + 等比缩放 + 平移，4 个数）或<strong>仿射</strong>（再加切变，6 个数）。</p>
+    <p>做法（脚本里的实现）：</p>
+    <ol>
+      <li>在上一帧用 <code>goodFeaturesToTrack</code> 选一批好跟踪的角点。</li>
+      <li>用金字塔光流 <code>calcOpticalFlowPyrLK</code> 找到它们在下一帧的位置。</li>
+      <li>用 <code>estimateAffinePartial2D</code>（相似）或 <code>estimateAffine2D</code>（仿射）+ RANSAC，从点对里估出 2×3 矩阵。</li>
+    </ol>
+    <pre><code>pts = cv2.goodFeaturesToTrack(prev_gray, ...)
+nxt, st, _ = cv2.calcOpticalFlowPyrLK(prev_gray, gray, pts, None, ...)
+M, _ = cv2.estimateAffinePartial2D(p0, p1, method=cv2.RANSAC)
+# M ≈ [[s·cosθ, −s·sinθ, dx],
+#      [s·sinθ,  s·cosθ, dy]]</code></pre>
+    <p>从矩阵里抽出三个「人话参数」就够本篇用了：</p>
+    <p class="formula">dx, dy = 平移；　θ = atan2(M<sub>10</sub>, M<sub>00</sub>)</p>
+    <p>白话：dx/dy 是画面整体往哪挪；θ 是整体拧了多少度。缩放 s 在手持短视频里常接近 1，本篇补偿时按 1 处理，先把平移和转角弄懂。</p>
+    <figure>
+      <img src="assets/images/ch19_features.png" alt="一帧上标出的跟踪特征点">
+      <figcaption>图 19-4　某一帧上的跟踪点。点够多、分布够散，RANSAC 才估得稳；大片天空、糊成一团时估计会飘——那是光流篇讨论过的失败模式。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p><strong>相似还是仿射？</strong>手持防抖入门常用相似：参数少、更稳。仿射能吃一点切变，但对噪声更敏感。脚本默认相似；你若改成仿射，路径分量会多两个「切变」自由度，平滑时同样逐分量做即可。</p>
+    </div>
+
+    <h2 id="path">步骤 2：累积成相机路径</h2>
+    <p>帧间的 dx、dy、θ 只是「这一步迈了多大」。要描述「从开头到现在相机在哪」，需要<strong>累加</strong>：</p>
+    <p class="formula">X<sub>0</sub>=0,　X<sub>k</sub> = dx<sub>1</sub> + dx<sub>2</sub> + … + dx<sub>k</sub></p>
+    <p>Y、θ 同理。得到三条随帧号变化的曲线，合称<strong>相机路径</strong>（trajectory）。</p>
+    <p>生活类比：你每秒记下「这一步向东几米、向北几米」；把步子加起来，才画出整条散步路线。防抖要平滑的，是这条<strong>路线</strong>，不是单独某一步。</p>
+    <figure>
+      <img src="assets/figures/ch19_components.png" alt="帧间增量、累积路径与转角三条曲线">
+      <figcaption>图 19-5　上：帧间平移增量（毛刺多）。中：累积 x/y 与平滑后。下：累积转角。注意：平滑作用在累积曲线上，不是只对增量做平均。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>严格说，带旋转时平移的累积要用旋转矩阵链式相乘，不能简单标量相加。入门教程（以及本篇脚本）用「先抽 dx/dy/θ，再分别 cumsum」——在转角很小、主要是抖的时候够用，也最好讲。工程里也会直接对 2×3 / 3×3 矩阵做李群平滑，那是进阶话题。</p>
+    </div>
+
+    <h2 id="smooth">步骤 3：滑动窗口平滑</h2>
+    <p>原始路径毛刺多 = 高频抖动。最简单的低通：<strong>滑动平均</strong>。半径为 R 时，第 k 帧的平滑值是左右各 R 帧（共 2R+1 帧）的平均。</p>
+    <p class="formula">S<sub>k</sub> = (P<sub>k−R</sub> + … + P<sub>k</sub> + … + P<sub>k+R</sub>) / (2R+1)</p>
+    <p>白话：看前后一小段「邻居」，取中庸。R 越大，曲线越钝、越稳；但也越跟不上你故意的转弯和加速。</p>
+    <p>脚本用两端反射填充，避免开头结尾被零填充拉歪：</p>
+    <pre><code>def moving_average(arr, radius):
+    k = 2 * radius + 1
+    pad = np.pad(arr, (radius, radius), mode="reflect")
+    return np.convolve(pad, np.ones(k) / k, mode="valid")</code></pre>
+    <figure>
+      <img src="assets/figures/ch19_path_compare.png" alt="原始与平滑路径俯视对照及补偿量">
+      <figcaption>图 19-6　左：橙色原始累积轨迹 vs 青色平滑轨迹（课文默认半径 7）。右：每帧要施加的补偿量 Δ = S − P。</figcaption>
+    </figure>
+
+    <h2 id="comp">步骤 4：路径差补偿 warp</h2>
+    <p>平滑路径 S 是「我们希望相机当时在的位置」。实际路径是 P。差一下：</p>
+    <p class="formula">补偿 δ<sub>k</sub> = S<sub>k</sub> − P<sub>k</sub></p>
+    <p>白话：这一帧实际偏右了 5 像素，平滑目标只要偏右 1 像素，就把画面往左拉 4 像素——让内容看起来像走在 S 上。</p>
+    <figure>
+      <img src="assets/figures/ch19_comp_idea.png" alt="原路径与平滑路径之间的双向箭头示意补偿">
+      <figcaption>图 19-7　补偿不是抹掉路径，而是把每帧「拉」向平滑目标。</figcaption>
+    </figure>
+    <p>对平移和转角分别算 δx、δy、δθ，拼成相似矩阵，再 <code>warpAffine</code>：</p>
+    <pre><code>ddx = smooth_x[i] - path_x[i]
+ddy = smooth_y[i] - path_y[i]
+dda = smooth_a[i] - path_a[i]
+M = sim_matrix(ddx, ddy, dda)   # 2×3
+stable = cv2.warpAffine(frame, M, (W, H), borderValue=(40,40,40))</code></pre>
+    <p>warp 之后，原来在画框里的内容被挪/拧到新位置，画框四角往往会空出<strong>黑边</strong>（没有像素可填）。所以稳像几乎总是搭配<strong>裁切</strong>：丢掉一圈边，再放大回输出分辨率——视野变窄，换来满幅无黑边。</p>
+    <div class="callout note">
+      <p>补偿用的是「整段视频都算完」的离线平滑：第 k 帧的 S<sub>k</sub> 用到了未来帧。实时预览要用因果滤波（只看过去），或固定延迟。手机 EIS 常在两者之间折中。本篇先把离线版直觉立住。</p>
+    </div>
+
+    <h2 id="oversmooth">过平滑：漂与裁切</h2>
+    <p>把半径拧到很大，会发生两件讨厌的事：</p>
+    <ol>
+      <li><strong>漂（把运镜当抖动）</strong>：你慢慢向右跟拍，累积 X 本该稳步爬升；过大的窗口把爬升也平均掉，S 几乎趴平。成片里主体会慢慢「滑」出构图，像船在漂。</li>
+      <li><strong>视野损失</strong>：S 与 P 差得越大，补偿越大，黑边越宽，裁切越狠，等效焦距越长。</li>
+    </ol>
+    <figure>
+      <img src="assets/figures/ch19_oversmooth.png" alt="半径 3、15、35 时平滑曲线对比">
+      <figcaption>图 19-8　同一原路径。半径 3：跟得紧。半径 15：趋势被压。半径 35：几乎抹成水平——故意运镜没了。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch19_crop_cost.png" alt="平滑半径与最大补偿位移的关系曲线">
+      <figcaption>图 19-9　半径↑ → 最大补偿位移↑ → 裁切更狠。第 20 篇会专门谈「裁切比怎么定」以及更聪明的路径优化（压高频、保运镜）。</figcaption>
+    </figure>
+    <p>经验口感（本篇合成数据上）：半径大约覆盖「你想压掉的抖动周期」的几分之一到一倍，先从 5–10 试；看到构图发漂，就减小半径，而不是一味加大。</p>
+
+    <h2 id="try">网页里拧路径</h2>
+    <p>下面用合成路径模拟「故意向右运镜 + 高频抖动」。拖动平滑半径和抖动幅度，看青色目标路径如何变，以及补偿有多大（预示裁切压力）。</p>
+    <div class="playground">
+      <canvas id="path-demo" class="demo" width="820" height="340" aria-label="路径平滑交互示意"></canvas>
+      <div class="controls">
+        <label for="radius">平滑半径 R</label>
+        <input id="radius" type="range" min="0" max="30" step="1" value="7">
+        <output id="radius-out" for="radius">7</output>
+        <label for="amp">抖动幅度</label>
+        <input id="amp" type="range" min="0" max="24" step="1" value="10">
+        <output id="amp-out" for="amp">10</output>
+        <label for="pan">运镜速度</label>
+        <input id="pan" type="range" min="0" max="40" step="1" value="16">
+        <output id="pan-out" for="pan">1.6</output>
+      </div>
+      <div class="actions">
+        <button type="button" class="primary" id="path-play" aria-pressed="false">播放</button>
+        <button type="button" id="path-reset">恢复默认</button>
+      </div>
+      <p class="readout" id="path-readout" aria-live="polite"></p>
+    </div>
+    <div class="callout try">
+      <h3>建议你试</h3>
+      <ol>
+        <li>R=0：青线贴住橙线，补偿≈0，等于没防抖。</li>
+        <li>R=7、幅度=10：毛刺下去，运镜爬升还在——接近课文默认。</li>
+        <li>R=28：青线变平，右侧「最大|Δ|」飙高——这就是漂 + 大裁切的前兆。</li>
+        <li>把运镜速度拧到 0，再加大 R：路径本就该在原点附近抖，过平滑危害变小——说明「过平滑」主要伤害的是<strong>有意的低频运动</strong>。</li>
+      </ol>
+    </div>
+
+    <h2 id="run">运行脚本</h2>
+    <p>脚本会：合成大场景 → 按「运镜+抖动」渲染晃动帧 → 光流估帧间相似 → 累积/平滑/补偿 → 出对照图与两段短视频。</p>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <pre class="terminal"><code>cd 视频图片拼接防抖
+source .venv/bin/activate
+MPLCONFIGDIR=/tmp/mpl-cache python code/ch19_stabilize_2d.py</code></pre>
+      <p>成功时终端出现「自检通过」，并写出：</p>
+      <ul>
+        <li><code>assets/figures/ch19_pipeline.png</code>、<code>ch19_comp_idea.png</code>、<code>ch19_path_compare.png</code>、<code>ch19_components.png</code>、<code>ch19_oversmooth.png</code>、<code>ch19_crop_cost.png</code></li>
+        <li><code>assets/images/ch19_before_after.png</code>、<code>ch19_frame_pair.png</code>、<code>ch19_features.png</code></li>
+        <li><code>ch19_shake_demo.mp4</code>、<code>ch19_stable_demo.mp4</code>（若本机 VideoWriter 可用）</li>
+        <li>你的参数图：<code>ch19_my_path.png</code>、<code>ch19_my_strip.png</code>、<code>ch19_my_crop.png</code></li>
+      </ul>
+    </div>
+
+    <h2 id="edit">改这里</h2>
+    <p>打开 <a href="code/ch19_stabilize_2d.py"><code>code/ch19_stabilize_2d.py</code></a> 顶部「改这里」。只影响 <code>ch19_my_*.png</code>；课文对照图仍按固定参数重画。</p>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>把 <code>MY_SMOOTH_RADIUS</code> 改成 <code>2</code>，再改成 <code>25</code>，对比 <code>ch19_my_path.png</code>：半径大时青色是否更「平」、补偿是否更大。</li>
+        <li>把 <code>MY_SHAKE_AMP</code> 改成 <code>3</code> 与 <code>18</code>，看 <code>ch19_my_strip.png</code> 稳前稳后差异。</li>
+        <li>把 <code>MY_PAN_SPEED</code> 改成 <code>0</code>（几乎不运镜）再改成 <code>3.0</code>，结合大半径，体会「漂」主要来自抹掉低频运镜。</li>
+        <li>看 <code>ch19_my_crop.png</code> 上青色裁切框：半径/幅度越大，框往往越往里缩。</li>
+      </ol>
+    </div>
+
+    <h2 id="check">自测</h2>
+    <p>先自己答，再展开。</p>
+    <details class="quiz">
+      <summary>1. 二维稳像四步按顺序是什么？「稳」直接来自哪一步的输出？</summary>
+      <p>估帧间相似/仿射 → 累积路径 → 平滑 → 用路径差补偿 warp。成片观感上的「稳」直接来自第 4 步：按 δ=S−P 去 warp；前三步是在准备这条 δ。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. 为什么平滑通常做在「累积路径」上，而不是只对帧间 dx 做平均？</summary>
+      <p>观感对应的是相机随时间走的轨迹。只平滑增量，累积后低频偏差仍可能乱爬；对累积路径低通，等价于约束「整条路线」别抖。帧间增量平均也不能直接表达「希望相机现在在哪」。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. 补偿 warp 之后为什么几乎总要裁切？裁切换来了什么、丢掉了什么？</summary>
+      <p>warp 把内容挪/拧离原画框，四角会出现无像素的黑边。裁切丢掉一圈边再放大，换来满幅无黑边的成片，代价是视野变窄（等效变焦）。</p>
+    </details>
+    <details class="quiz">
+      <summary>4. 平滑半径过大时，什么叫「漂」？它和抖动幅度大是同一件事吗？</summary>
+      <p>漂：故意的慢速运镜被当成抖动抹掉，平滑路径几乎不跟着走，主体在构图里慢慢滑移。它主要来自平滑过猛（低频也被滤），不一定等于「抖动幅度大」。抖动大主要增加高频毛刺与补偿峰值；过平滑则伤害低频意图。</p>
+    </details>
+    <details class="quiz">
+      <summary>5. <code>estimateAffinePartial2D</code> 与 <code>estimateAffine2D</code> 差在哪？本篇默认用哪个，为什么？</summary>
+      <p>Partial 估相似（转+等比缩放+平移，4 自由度）；Affine2D 估一般仿射（6 自由度，含切变）。本篇默认相似：手持小运动够用、更稳、更好讲。需要切变时再上仿射。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>本篇把「路径差 → warp → 黑边」串起来了。下一篇专门谈：裁切比例怎么定、怎样优化路径才能<strong>压高频又保留运镜</strong>，以及光学防抖 OIS 与电子防抖 EIS 怎么分工。</p>
+    <p><a href="20-crop-ois-eis.html">第 20 篇 · 裁切、路径优化与 OIS / EIS 总览</a>（待写）</p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="18-flow-viz.html">上一篇</a>
+      <a href="index.html">目录</a>
+      <a href="20-crop-ois-eis.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var INK = "#1c1915";
+      var MUTED = "#5c564c";
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+      var N = 60;
+      var playing = false;
+      var frame = 0;
+      var lastTime = null;
+      var cache = null;
+
+      function movingAverage(arr, radius) {
+        if (radius <= 0) return arr.slice();
+        var k = 2 * radius + 1;
+        var pad = [];
+        var i;
+        // 反射填充（与脚本 np.pad mode=reflect 同思路）
+        for (i = radius; i >= 1; i--) pad.push(arr[Math.min(i, arr.length - 1)]);
+        for (i = 0; i < arr.length; i++) pad.push(arr[i]);
+        for (i = 1; i <= radius; i++) {
+          var idx = arr.length - 1 - i;
+          if (idx < 0) idx = 0;
+          pad.push(arr[idx]);
+        }
+        var out = [];
+        for (i = 0; i < arr.length; i++) {
+          var s = 0;
+          var j;
+          for (j = 0; j < k; j++) s += pad[i + j];
+          out.push(s / k);
+        }
+        return out;
+      }
+
+      function buildPath(amp, pan) {
+        var dx = [];
+        var dy = [];
+        var i;
+        for (i = 0; i < N - 1; i++) {
+          var t = i / (N - 2);
+          var jx = amp * 0.55 * Math.sin(2 * Math.PI * 6.5 * t);
+          var jy = amp * 0.45 * Math.sin(2 * Math.PI * 5.0 * t + 0.6);
+          // 固定伪随机，避免每次拖动乱跳
+          var r1 = Math.sin(i * 12.9898 + 78.233) * 43758.5453;
+          r1 = r1 - Math.floor(r1);
+          var r2 = Math.sin(i * 39.346 + 11.135) * 23421.631;
+          r2 = r2 - Math.floor(r2);
+          dx.push(pan + jx + amp * 0.35 * (r1 * 2 - 1));
+          dy.push(0.15 + jy + amp * 0.3 * (r2 * 2 - 1));
+        }
+        var px = [0];
+        var py = [0];
+        for (i = 0; i < dx.length; i++) {
+          px.push(px[i] + dx[i]);
+          py.push(py[i] + dy[i]);
+        }
+        return { px: px, py: py };
+      }
+
+      function surface(canvas) {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var width = canvas.clientWidth || 640;
+        var height = canvas.clientHeight || 340;
+        var pw = Math.round(width * dpr);
+        var ph = Math.round(height * dpr);
+        if (canvas.width !== pw || canvas.height !== ph) {
+          canvas.width = pw;
+          canvas.height = ph;
+        }
+        var ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(0, 0, width, height);
+        return { ctx: ctx, width: width, height: height };
+      }
+
+      function recompute() {
+        var radius = Number(document.getElementById("radius").value);
+        var amp = Number(document.getElementById("amp").value);
+        var pan = Number(document.getElementById("pan").value) / 10;
+        var raw = buildPath(amp, pan);
+        var sx = movingAverage(raw.px, radius);
+        var sy = movingAverage(raw.py, radius);
+        var maxComp = 0;
+        var i;
+        for (i = 0; i < N; i++) {
+          var c = Math.hypot(sx[i] - raw.px[i], sy[i] - raw.py[i]);
+          if (c > maxComp) maxComp = c;
+        }
+        cache = { radius: radius, amp: amp, pan: pan, px: raw.px, py: raw.py, sx: sx, sy: sy, maxComp: maxComp };
+        document.getElementById("radius-out").textContent = String(radius);
+        document.getElementById("amp-out").textContent = String(amp);
+        document.getElementById("pan-out").textContent = pan.toFixed(1);
+        var tip = "最大补偿 |Δ| ≈ " + maxComp.toFixed(1) + " px。";
+        if (radius === 0) tip += " R=0：没有平滑，等于不防抖。";
+        else if (radius >= 22 && pan > 0.5) tip += " 半径很大且有运镜：青色跟不上爬升 → 漂，裁切压力大。";
+        else if (radius <= 8) tip += " 较小半径：压毛刺，慢趋势多半还在。";
+        else tip += " 继续加大 R，看青线是否被抹平。";
+        document.getElementById("path-readout").textContent = tip;
+      }
+
+      function draw() {
+        if (!cache) recompute();
+        var canvas = document.getElementById("path-demo");
+        var box = surface(canvas);
+        var ctx = box.ctx;
+        var W = box.width;
+        var H = box.height;
+        var padL = 48;
+        var padR = 16;
+        var padT = 28;
+        var padB = 36;
+        var plotW = W - padL - padR;
+        var plotH = H - padT - padB;
+
+        var allX = cache.px.concat(cache.sx);
+        var allY = cache.py.concat(cache.sy);
+        var minX = Math.min.apply(null, allX);
+        var maxX = Math.max.apply(null, allX);
+        var minY = Math.min.apply(null, allY);
+        var maxY = Math.max.apply(null, allY);
+        if (maxX - minX < 1) { minX -= 1; maxX += 1; }
+        if (maxY - minY < 1) { minY -= 1; maxY += 1; }
+        // 略留边
+        var mx = (maxX - minX) * 0.08;
+        var my = (maxY - minY) * 0.08;
+        minX -= mx; maxX += mx; minY -= my; maxY += my;
+
+        function X(v) { return padL + ((v - minX) / (maxX - minX)) * plotW; }
+        function Y(v) { return padT + plotH - ((v - minY) / (maxY - minY)) * plotH; }
+
+        ctx.strokeStyle = "#e6dccb";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(padL, padT, plotW, plotH);
+
+        ctx.font = "12px sans-serif";
+        ctx.fillStyle = MUTED;
+        ctx.fillText("累积路径俯视（橙=原始，青=平滑）", padL, 18);
+        ctx.fillText("x →", W - 36, H - 14);
+        ctx.save();
+        ctx.translate(14, padT + plotH / 2);
+        ctx.rotate(-Math.PI / 2);
+        ctx.fillText("y", 0, 0);
+        ctx.restore();
+
+        function strokePath(xs, ys, color, lw) {
+          ctx.beginPath();
+          ctx.strokeStyle = color;
+          ctx.lineWidth = lw;
+          var i;
+          for (i = 0; i < xs.length; i++) {
+            var x = X(xs[i]);
+            var y = Y(ys[i]);
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          }
+          ctx.stroke();
+        }
+        strokePath(cache.px, cache.py, WAVE, 1.8);
+        strokePath(cache.sx, cache.sy, TEAL, 2.4);
+
+        var f = Math.max(0, Math.min(N - 1, frame));
+        // 补偿箭头
+        ctx.beginPath();
+        ctx.strokeStyle = INK;
+        ctx.lineWidth = 1.4;
+        ctx.moveTo(X(cache.px[f]), Y(cache.py[f]));
+        ctx.lineTo(X(cache.sx[f]), Y(cache.sy[f]));
+        ctx.stroke();
+
+        ctx.fillStyle = WAVE;
+        ctx.beginPath();
+        ctx.arc(X(cache.px[f]), Y(cache.py[f]), 5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = TEAL;
+        ctx.beginPath();
+        ctx.arc(X(cache.sx[f]), Y(cache.sy[f]), 5, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = INK;
+        ctx.font = "12px sans-serif";
+        ctx.fillText("帧 " + f + "  补偿 " + Math.hypot(cache.sx[f] - cache.px[f], cache.sy[f] - cache.py[f]).toFixed(1) + " px", padL + 8, padT + 18);
+      }
+
+      function tick(ts) {
+        if (!playing) { lastTime = null; return; }
+        if (lastTime == null) lastTime = ts;
+        if (ts - lastTime > 70) {
+          frame = (frame + 1) % N;
+          lastTime = ts;
+          draw();
+        }
+        requestAnimationFrame(tick);
+      }
+
+      ["radius", "amp", "pan"].forEach(function (id) {
+        document.getElementById(id).addEventListener("input", function () {
+          recompute();
+          draw();
+        });
+      });
+      document.getElementById("path-play").addEventListener("click", function () {
+        playing = !playing;
+        this.setAttribute("aria-pressed", playing ? "true" : "false");
+        this.textContent = playing ? "暂停" : "播放";
+        if (playing) requestAnimationFrame(tick);
+      });
+      document.getElementById("path-reset").addEventListener("click", function () {
+        document.getElementById("radius").value = 7;
+        document.getElementById("amp").value = 10;
+        document.getElementById("pan").value = 16;
+        frame = 0;
+        recompute();
+        draw();
+      });
+      window.addEventListener("resize", draw);
+      recompute();
+      draw();
+    })();
+  </script>
+  <noscript>
+    <div class="wrap">
+      <p class="callout note">浏览器禁用脚本时无法使用路径交互。静态图与 Python 脚本仍可用。</p>
+    </div>
+  </noscript>
+</body>
+</html>

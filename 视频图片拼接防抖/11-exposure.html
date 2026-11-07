@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 11 篇 · 曝光补偿、鬼影与常见失败</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        拼接与防抖 · 图像视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="10-blend.html">第 10 篇</a>
+        <a href="11-exposure.html" aria-current="page">第 11 篇</a>
+        <a href="12-ba.html">第 12 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 11 篇 · 失败与补救 · 约 45 分钟</p>
+    <h1>曝光补偿、鬼影与常见失败</h1>
+    <p class="lede">几何对上了，全景仍可能「难看」：接缝一半亮一半暗、半透明路人、近处树干裂成双影。本篇把自动曝光、增益补偿、动态鬼影、近景视差拆开讲，并给一份失败图库与拍摄清单。页面里可以拧亮度差和行人偏移。</p>
+    <div class="meta">
+      <span class="pill">先读：第 8–10 篇流水线直觉（可并行）</span>
+      <span class="pill">和第 3 篇「单应何时失效」呼应</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#ae">自动曝光：亮度跳变</a></li>
+        <li><a href="#gain">增益补偿白话</a></li>
+        <li><a href="#ghost">动态物体：鬼影</a></li>
+        <li><a href="#parallax">近景视差失败</a></li>
+        <li><a href="#gallery">失败图库</a></li>
+        <li><a href="#tips">拍摄建议</a></li>
+        <li><a href="#try">拧亮度和鬼影</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改这里</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="ae">自动曝光：亮度跳变</h2>
+    <p>手机默认常开<strong>自动曝光（AE）</strong>：画面偏暗就拉高增益/加长曝光，偏亮就压回去。你原地环拍时，左半边可能对着天空，右半边对着楼影——相机会为每一张「单独找一个它觉得舒服的亮度」。</p>
+    <p>于是出现经典现象：两张图在重叠区本来是同一堵墙，左边那张墙是浅灰，右边那张墙是深灰。几何矩阵可以把墙边对齐，但<strong>像素值本身对不上</strong>。硬切会留下一条竖的亮度台阶；即便做了羽化（第 10 篇），台阶只会变成一条发灰的「雾带」，不会凭空消失。</p>
+    <figure>
+      <img src="assets/figures/ch11_ae_jump.png" alt="左右亮度不同导致硬拼接缝">
+      <figcaption>图 11-1　左图被 AE 拧亮、右图拧暗。硬拼后中间出现一条亮度台阶——这不是几何错位，是曝光不一致。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>快速自检：把接缝附近放大，如果墙砖纹理能对上、只是一边亮一边暗，优先怀疑曝光，而不是特征匹配失败。</p>
+    </div>
+    <p>还有两个加重剂：</p>
+    <ul>
+      <li><strong>自动白平衡（AWB）</strong>也会每张乱拧，接缝可能偏色（一边偏暖一边偏冷）。本篇脚本用灰度均值演示增益；真机里常要连色彩一起估。</li>
+      <li><strong>高光裁切 / 死黑</strong>：一边已经爆成 255，一边还在阴影。后面乘再大的增益，也「拧不出」已经丢掉的细节。</li>
+    </ul>
+
+    <h2 id="gain">增益补偿白话</h2>
+    <p>想法很土，但管用：给每张图乘一个正数 <code>g</code>（增益），让重叠区看起来一样亮。把左图亮度当尺子，右图该拧多少，就看重叠区两边平均亮度的比。</p>
+    <p class="formula">g<sub>R</sub> ≈ μ<sub>L</sub> / μ<sub>R</sub></p>
+    <p>这里 μ 是重叠区的平均灰度。白话：右图整体偏暗、均值只有左图的一半，就把右图每个像素大约乘 2。左图常常固定 <code>g<sub>L</sub>=1</code>，避免整幅一起漂。</p>
+    <figure>
+      <img src="assets/figures/ch11_gain_idea.png" alt="增益补偿示意图">
+      <figcaption>图 11-2　增益补偿 = 给每张图一个旋钮。目标：重叠区里 g<sub>L</sub>·I<sub>L</sub> 与 g<sub>R</sub>·I<sub>R</sub> 尽量接近。</figcaption>
+    </figure>
+    <p>多图时，可以在「每对重叠」上写方程，用最小二乘解一组增益（OpenCV 拼接模块里的 <code>detail.GainCompensator</code> 一类）。还有按块估的版本：同一张图上半亮、下半暗时，一个全局 <code>g</code> 不够，就切成小块分别拧。</p>
+    <figure>
+      <img src="assets/figures/ch11_gain_before_after.png" alt="增益补偿前后对比">
+      <figcaption>图 11-3　上：左右原图与重叠均值。下左：只羽化，台阶仍在。下右：先按 μ<sub>L</sub>/μ<sub>R</sub> 拧右图再羽化，台阶明显变淡。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>增益补偿<strong>不修复几何</strong>。楼边若对不齐，拧亮度只会让双影「两边一样亮」，看起来更假。顺序通常是：先配准 → 再曝光补偿 → 再找缝/融合。</p>
+    </div>
+    <pre><code># 直觉版（两图）
+ml = left_overlap.mean()
+mr = right_overlap.mean()
+g = ml / (mr + 1e-6)
+right_fixed = clip(right * g, 0, 255)</code></pre>
+
+    <h2 id="ghost">动态物体：鬼影</h2>
+    <p>你拍左图时，有人站在重叠区；转过去拍右图时，人已经走开。两张图在「人曾经站过」的地方内容不一致。融合若取平均或半透明叠，就会出现<strong>半透明残影</strong>——俗称鬼影（ghost）。</p>
+    <p>树叶被风吹、车流、旗帜、水面波纹，都是同一类：<strong>场景在时间上不静止</strong>。特征匹配有时还能碰巧对上静止背景；融合阶段却必须决定「听哪一张」。</p>
+    <figure>
+      <img src="assets/figures/ch11_ghost.png" alt="行人移动造成鬼影">
+      <figcaption>图 11-4　左上/右上：行人位置不同。左下：羽化平均后出现半透明人影。右下：重叠区绝对差——动过的地方最亮，可当「哪里可能出鬼」的提示图。</figcaption>
+    </figure>
+    <p>常见对策（由易到难）：</p>
+    <ul>
+      <li><strong>拍摄回避</strong>：等行人走完再拍下一张（最便宜）。</li>
+      <li><strong>接缝躲开</strong>：图割/动态规划找缝时，让缝绕开高差分区域（第 10 篇思路）。</li>
+      <li><strong>多带投票</strong>：同一方向拍多张，在像素上选「最常出现」的颜色（适合车流）。</li>
+      <li><strong>手动修</strong>：商业全景软件常提供「选这一张的人」。</li>
+    </ul>
+    <div class="callout note">
+      <p>鬼影不是曝光问题：把增益拧到完全一致，半透明人影还在。差分图仍亮，说明内容本身冲突。</p>
+    </div>
+
+    <h2 id="parallax">近景视差失败</h2>
+    <p>回忆第 2–3 篇：一张单应性 H 描述的是<strong>两个平面</strong>（或相机纯旋转）之间的映射。你脚下有一棵近树、远处有一排楼——它们不在同一深度。相机只要有一点平移（人转身时身体很难完全绕光心转），近树在图像上的位移就会比远楼大。这叫<strong>视差（parallax）</strong>。</p>
+    <p>估 H 时，特征点往往更多落在远景纹理上，于是 H「伺候」远楼：远景对齐得漂亮，近树却对不齐，半透明叠起来就是双影。看起来像鬼影，根因却是<strong>几何模型不够</strong>，不是行人在动。</p>
+    <figure>
+      <img src="assets/figures/ch11_parallax.png" alt="近景视差导致双影">
+      <figcaption>图 11-5　青框标近景树干。中：理想对齐。右：单个平面变换只对齐远景时，近树裂开——典型视差失败。</figcaption>
+    </figure>
+    <p>和鬼影怎么区分？</p>
+    <ul>
+      <li>鬼影：物体在两帧<strong>内容不同</strong>（人走了），背景往往还能对上。</li>
+      <li>视差：同一棵树还在，只是<strong>左右错开几个到几十像素</strong>；错开量随深度变化——越近越大。</li>
+    </ul>
+    <p>出路：绕光心旋转拍摄、让近物远离取景；或上多平面 / 网格变形 / 深度相关的对齐（超出本篇，知道「单应不是万能胶」即可）。</p>
+
+    <h2 id="gallery">失败图库</h2>
+    <p>把本篇和相邻篇的「难看」收成一张对照表。实战里先对号入座，再决定是拧增益、躲接缝，还是重拍。</p>
+    <figure>
+      <img src="assets/figures/ch11_failure_gallery.png" alt="四种常见拼接失败">
+      <figcaption>图 11-6　① 曝光台阶　② 动态鬼影　③ 近景视差　④ 模糊/虚焦导致纹理对不齐。④ 更偏第 5–7 篇匹配质量问题，列在这里方便一起认。</figcaption>
+    </figure>
+    <table>
+      <thead>
+        <tr><th>现象</th><th>优先怀疑</th><th>先试什么</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>缝两侧纹理齐、明暗不同</td><td>AE / 增益</td><td>锁曝光；增益补偿</td></tr>
+        <tr><td>半透明人/车/叶</td><td>动态场景</td><td>重拍；接缝躲开；多帧投票</td></tr>
+        <tr><td>近物双影、远景尚可</td><td>视差</td><td>绕光心；少近景；换模型</td></tr>
+        <tr><td>整片发糊、特征很少</td><td>虚焦/运动模糊</td><td>提高快门；重新对焦</td></tr>
+        <tr><td>楼边锯齿、整体扭曲</td><td>H 估坏 / 投影选型</td><td>检查匹配；试柱面（第 9 篇）</td></tr>
+      </tbody>
+    </table>
+
+    <h2 id="tips">拍摄建议</h2>
+    <p>算法能补救一部分，但<strong>拍摄纪律</strong>往往比多调半小时参数更有效。下面六条覆盖本篇大半坑。</p>
+    <figure>
+      <img src="assets/figures/ch11_shooting_tips.png" alt="拍摄建议清单">
+      <figcaption>图 11-7　锁曝光、绕光心、躲开行人、保证重叠、避免极端光比、慎放近景。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>视频全景/多路拼接还会叠上时间同步与 Rolling Shutter（第 21、26 篇）。本篇先把「静态多图」的失败模式钉牢。</p>
+    </div>
+
+    <h2 id="try">拧亮度和鬼影</h2>
+    <p>左侧模拟左图，右侧模拟右图。拖「右图暗度」看接缝台阶；打开「增益补偿」应把台阶压下去。再拖「行人偏移」：补偿解决不了鬼影，半透明人影仍在。</p>
+    <div class="playground">
+      <canvas id="expo-demo" class="demo tall" width="820" height="360" aria-label="曝光与鬼影交互示意"></canvas>
+      <div class="controls">
+        <label for="darkness">右图暗度（1=一样，越大越暗）</label>
+        <input type="range" id="darkness" min="1" max="3" step="0.05" value="1.8">
+        <label for="ghost">行人水平偏移（px）</label>
+        <input type="range" id="ghost" min="0" max="60" step="1" value="28">
+      </div>
+      <div class="actions">
+        <button type="button" class="primary" id="gain-on">增益补偿：开</button>
+        <button type="button" id="gain-off">增益补偿：关</button>
+        <button type="button" id="expo-reset">恢复默认</button>
+      </div>
+      <p class="readout" id="expo-readout" aria-live="polite"></p>
+    </div>
+
+    <h2 id="run">运行脚本</h2>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <pre class="terminal"><code>source .venv/bin/activate   # 若尚未激活
+MPLCONFIGDIR=/tmp/mpl-cache python code/ch11_exposure.py</code></pre>
+      <p>会写出 <code>ch11_ae_jump.png</code>、<code>ch11_gain_before_after.png</code>、<code>ch11_ghost.png</code>、<code>ch11_parallax.png</code>、<code>ch11_failure_gallery.png</code> 等，以及你的 <code>ch11_my_exposure.png</code>。</p>
+    </div>
+
+    <h2 id="edit">改这里</h2>
+    <p>打开 <a href="code/ch11_exposure.py"><code>code/ch11_exposure.py</code></a>，改顶部三个旋钮。只影响 <code>ch11_my_exposure.png</code>，课文对照图仍用固定参数。</p>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>把 <code>BRIGHTNESS_RATIO</code> 改成 <code>1.0</code>，<code>APPLY_GAIN_FIX=False</code>：接缝应几乎看不出亮度台阶。</li>
+        <li>改成 <code>2.5</code> 且关闭增益：台阶很重；再打开 <code>APPLY_GAIN_FIX=True</code>，台阶应变淡。</li>
+        <li>把 <code>GHOST_SHIFT_PX</code> 从 <code>0</code> 加到 <code>50</code>：无论增益开或关，都应看到更明显的半透明行人。</li>
+        <li>故意设 <code>BRIGHTNESS_RATIO=0.7</code>（右图反而更亮）：增益会算出小于 1，把右图压暗对齐左图。</li>
+      </ol>
+    </div>
+
+    <h2 id="check">自测</h2>
+    <details class="quiz">
+      <summary>1. 接缝两侧砖缝齐、但一边亮一边暗，优先查几何还是曝光？</summary>
+      <p>优先查曝光 / AE。几何已对齐时，增益补偿或锁曝光才是对症。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. 两图重叠区均值分别是 120 与 60，右图该乘大约多少增益（左图不动）？</summary>
+      <p>约 120/60 = 2。即把右图整体拧到与左图重叠均值接近。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. 增益补偿能去掉行人造成的半透明鬼影吗？</summary>
+      <p>不能。鬼影是内容冲突；增益只统一亮度。需要躲缝、重拍或多帧投票。</p>
+    </details>
+    <details class="quiz">
+      <summary>4. 远楼对齐、近树双影，更像动态鬼影还是视差？</summary>
+      <p>视差。同一物体仍在，只是深度不同导致位移不同；单应性照顾了远景平面。</p>
+    </details>
+    <details class="quiz">
+      <summary>5. 为什么环拍时建议「原地转身」而不是横着走？</summary>
+      <p>减少相机平移，从而减小视差，让「一张 H / 柱面投影」更站得住。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>一对一对地估变换，误差会顺着链条往后爬。下一篇用白话讲 <strong>Bundle Adjustment</strong>：把多张图的位姿（和三维点）放进一个大锅里一起微调，让整体更自洽。</p>
+    <p><a href="12-ba.html">第 12 篇 · Bundle Adjustment：多图一起纠偏</a>（待写）</p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="10-blend.html">上一篇</a>
+      <a href="index.html">目录</a>
+      <a href="12-ba.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+      var MUTED = "#5c564c";
+      var INK = "#1c1915";
+      var gainOn = true;
+      var canvas = document.getElementById("expo-demo");
+      var darkEl = document.getElementById("darkness");
+      var ghostEl = document.getElementById("ghost");
+      var readout = document.getElementById("expo-readout");
+
+      function surface(canvas) {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var width = canvas.clientWidth || 640;
+        var height = canvas.clientHeight || 360;
+        var pw = Math.round(width * dpr);
+        var ph = Math.round(height * dpr);
+        if (canvas.width !== pw || canvas.height !== ph) {
+          canvas.width = pw;
+          canvas.height = ph;
+        }
+        var ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(0, 0, width, height);
+        return { ctx: ctx, width: width, height: height };
+      }
+
+      function clamp(v, a, b) {
+        return Math.max(a, Math.min(b, v));
+      }
+
+      function drawScene(ctx, x0, y0, w, h, personX, brightness) {
+        // sky / ground
+        ctx.fillStyle = shade("#e8dcc8", brightness);
+        ctx.fillRect(x0, y0, w, h / 2);
+        ctx.fillStyle = shade("#c6baa8", brightness);
+        ctx.fillRect(x0, y0 + h / 2, w, h / 2);
+
+        // buildings
+        var buildings = [
+          [0.08, 0.42, "#6f7fa0"],
+          [0.22, 0.34, "#5a7390"],
+          [0.40, 0.48, "#6a5f4a"],
+          [0.58, 0.36, "#4f7a72"],
+          [0.74, 0.44, "#735868"]
+        ];
+        buildings.forEach(function (b) {
+          var bw = w * 0.12;
+          var bh = h * b[1];
+          var bx = x0 + w * b[0];
+          var by = y0 + h / 2 - bh;
+          ctx.fillStyle = shade(b[2], brightness);
+          ctx.fillRect(bx, by, bw, bh);
+          ctx.fillStyle = shade("#d8d2c6", brightness);
+          for (var yy = by + 10; yy < by + bh - 10; yy += 16) {
+            for (var xx = bx + 6; xx < bx + bw - 6; xx += 12) {
+              ctx.fillRect(xx, yy, 6, 8);
+            }
+          }
+        });
+
+        // near trunk
+        ctx.fillStyle = shade("#3c5a46", brightness);
+        ctx.fillRect(x0 + w * 0.48, y0 + h * 0.28, 16, h * 0.55);
+        ctx.beginPath();
+        ctx.ellipse(x0 + w * 0.48 + 8, y0 + h * 0.26, 28, 20, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // person
+        if (personX != null) {
+          var px = x0 + personX;
+          ctx.fillStyle = shade(WAVE, brightness);
+          ctx.fillRect(px, y0 + h * 0.35, 14, h * 0.28);
+          ctx.beginPath();
+          ctx.arc(px + 7, y0 + h * 0.32, 7, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // frame
+        ctx.strokeStyle = INK;
+        ctx.lineWidth = 1.2;
+        ctx.strokeRect(x0 + 0.5, y0 + 0.5, w - 1, h - 1);
+      }
+
+      function shade(hex, brightness) {
+        // brightness: 1=normal, <1 darker
+        var r = parseInt(hex.slice(1, 3), 16);
+        var g = parseInt(hex.slice(3, 5), 16);
+        var b = parseInt(hex.slice(5, 7), 16);
+        r = clamp(Math.round(r * brightness), 0, 255);
+        g = clamp(Math.round(g * brightness), 0, 255);
+        b = clamp(Math.round(b * brightness), 0, 255);
+        return "rgb(" + r + "," + g + "," + b + ")";
+      }
+
+      function meanBrightness(brightness) {
+        // proxy for overlap mean: base gray ~170
+        return 170 * brightness;
+      }
+
+      function draw() {
+        var s = surface(canvas);
+        var ctx = s.ctx;
+        var W = s.width;
+        var H = s.height;
+        var dark = parseFloat(darkEl.value, 10);
+        var ghost = parseFloat(ghostEl.value, 10);
+        var rightBright = 1 / dark;
+        var muL = meanBrightness(1.05);
+        var muR = meanBrightness(rightBright);
+        var gain = muL / Math.max(muR, 1e-6);
+        var rightShow = gainOn ? rightBright * gain : rightBright;
+
+        var panelW = (W - 36) / 2;
+        var panelH = H - 70;
+        var y0 = 28;
+
+        ctx.fillStyle = MUTED;
+        ctx.font = "13px sans-serif";
+        ctx.fillText("左图（基准）", 12, 18);
+        ctx.fillText(gainOn ? "右图（已×增益 " + gain.toFixed(2) + "）" : "右图（未补偿）", 24 + panelW, 18);
+
+        drawScene(ctx, 12, y0, panelW, panelH, 0.55 * panelW - ghost * 0.15, 1.05);
+        drawScene(ctx, 24 + panelW, y0, panelW, panelH, 0.55 * panelW + ghost * 0.85, rightShow);
+
+        // mini stitch strip
+        var stripY = y0 + panelH + 10;
+        var stripH = 22;
+        var stripW = W - 24;
+        var grad = ctx.createLinearGradient(12, 0, 12 + stripW, 0);
+        var mid = 0.5;
+        var leftC = shade("#b7a890", 1.05);
+        var rightC = shade("#b7a890", rightShow);
+        grad.addColorStop(0, leftC);
+        grad.addColorStop(mid - 0.02, leftC);
+        grad.addColorStop(mid + 0.02, rightC);
+        grad.addColorStop(1, rightC);
+        ctx.fillStyle = grad;
+        ctx.fillRect(12, stripY, stripW, stripH);
+        ctx.strokeStyle = WAVE;
+        ctx.beginPath();
+        ctx.moveTo(12 + stripW * mid, stripY);
+        ctx.lineTo(12 + stripW * mid, stripY + stripH);
+        ctx.stroke();
+        ctx.fillStyle = MUTED;
+        ctx.font = "12px sans-serif";
+        ctx.fillText("示意接缝亮度（中线）", 12, stripY + stripH + 14);
+
+        var ghostNote = ghost > 2 ? "重叠区有鬼影风险" : "行人几乎重合";
+        var gainNote = gainOn ? "增益已开，台阶应变淡" : "增益关闭，暗度差直接露在接缝";
+        readout.textContent =
+          "暗度比 " + dark.toFixed(2) +
+          "　μL/μR≈" + gain.toFixed(2) +
+          "　行人偏移 " + ghost.toFixed(0) + "px　|　" + gainNote + "；" + ghostNote;
+      }
+
+      darkEl.addEventListener("input", draw);
+      ghostEl.addEventListener("input", draw);
+      document.getElementById("gain-on").addEventListener("click", function () {
+        gainOn = true;
+        draw();
+      });
+      document.getElementById("gain-off").addEventListener("click", function () {
+        gainOn = false;
+        draw();
+      });
+      document.getElementById("expo-reset").addEventListener("click", function () {
+        darkEl.value = "1.8";
+        ghostEl.value = "28";
+        gainOn = true;
+        draw();
+      });
+
+      window.addEventListener("resize", draw);
+      draw();
+    })();
+  </script>
+</body>
+</html>

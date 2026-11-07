@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 8 篇 · 全景拼接流水线总览</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        拼接与防抖 · 图像视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="07-ransac.html">第 7 篇</a>
+        <a href="08-stitch.html" aria-current="page">第 8 篇</a>
+        <a href="09-projection.html">第 9 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 8 篇 · 图片拼接入口 · 约 50 分钟</p>
+    <h1>全景拼接流水线总览</h1>
+    <p class="lede">前面几篇把积木拆开讲过了：坐标、单应、特征、匹配、RANSAC。这一篇把它们<strong>串成一条能跑通的流水线</strong>——两张有重叠的图，自动变成一张更宽的拼图。先看懂两图；再白话谈多图参照帧与误差累积；失败时按步骤排查。</p>
+    <div class="meta">
+      <span class="pill">先读：第 3、5–7 篇（可先混个脸熟）</span>
+      <span class="pill">下一篇：投影模型（平面 / 柱面 / 球面）</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#goal">这一篇要拼出什么</a></li>
+        <li><a href="#pipe">流水线五步一眼看懂</a></li>
+        <li><a href="#pair">合成两张有重叠的图</a></li>
+        <li><a href="#detect">① 检测特征点</a></li>
+        <li><a href="#match">② 匹配对应点</a></li>
+        <li><a href="#h">③ RANSAC 估单应 H</a></li>
+        <li><a href="#canvas">④ 算画布大小与偏移</a></li>
+        <li><a href="#warp">⑤ warp 叠图</a></li>
+        <li><a href="#multi">多图：参照帧与误差累积</a></li>
+        <li><a href="#fail">失败时怎么排查</a></li>
+        <li><a href="#try">交互：逐步开关流水线</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改这里</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="goal">这一篇要拼出什么</h2>
+    <p>想象你站在原地，先拍左边一张，再稍稍右转拍右边一张。两张照片中间有一块<strong>重叠区域</strong>——同一栋楼、同一段路，两边都能看见。</p>
+    <p>人脑会自动「认出来」重叠区是同一地方，然后在脑子里把两张图粘成更宽的视野。电脑不会认，需要一条流水线：</p>
+    <ol>
+      <li>在两张图里找「容易认」的点（角点、斑点）；</li>
+      <li>把「像是同一点」的配对起来；</li>
+      <li>用这些配对估计一个几何变换 H（单应），把右图「拧」到左图坐标系；</li>
+      <li>算一张够大的画布，别把拧过去的图裁掉；</li>
+      <li>把右图 warp 上去，和左图叠在一起。</li>
+    </ol>
+    <div class="callout note">
+      <p>本篇假设场景近似一个平面（墙、远处街景）。近处大平移带来的视差，单个 H 扛不住——第 11 篇会专门看失败。现在先把「平面假设下的标准流水线」跑通。</p>
+    </div>
+
+    <h2 id="pipe">流水线五步一眼看懂</h2>
+    <figure>
+      <img src="assets/figures/ch08_pipeline.png" alt="检测、匹配、RANSAC、算画布、warp 叠图五步框图">
+      <figcaption>图 8-1　两图拼接流水线。每一步的输出是下一步的输入；中间任一步崩了，后面都会难看。</figcaption>
+    </figure>
+    <p>口诀可以记成：</p>
+    <p class="formula">找点 → 配对 → 估 H → 铺画布 → 叠上去</p>
+    <p>脚本 <code>code/ch08_stitch.py</code> 就是按这个顺序写的。页面后面有逐步开关的示意，跑脚本后还有一张「五步进度板」对照图。</p>
+    <figure>
+      <img src="assets/figures/ch08_steps.png" alt="五步进度板：检测、匹配、H、画布、叠图">
+      <figcaption>图 8-2　脚本生成的五步进度板。数字和矩阵来自同一次真实运行，不是手绘假数据。</figcaption>
+    </figure>
+
+    <h2 id="pair">合成两张有重叠的图</h2>
+    <p>真实相册里的街景不好控变量。本篇用程序画一张「假街景」（楼、窗户、地面格子），再裁出左图，并把场景做一点平移+微旋转后裁出右图——这样：</p>
+    <ul>
+      <li>重叠量可控（改 <code>SHIFT_X</code>）；</li>
+      <li>特征点够多，ORB 能稳定找到；</li>
+      <li>你知道「正确答案」大致是平移为主，方便判断结果是否离谱。</li>
+    </ul>
+    <figure>
+      <img src="assets/figures/ch08_pair.png" alt="合成的左图与右图并排">
+      <figcaption>图 8-3　左：参照帧（我们规定「世界」贴在左图上）。右：待对齐的右图，相对左图往右偏，并带一点旋转。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>为什么左图叫「参照帧」？因为后面所有变换都把东西映到左图坐标系。右图要「搬家」过来；左图自己可以几乎不动（最多整体平移一下，好让画布从原点开始）。</p>
+    </div>
+
+    <h2 id="detect">① 检测特征点</h2>
+    <p>平坦的白墙、光滑的天空，像素长得都一样，电脑分不清「哪是哪」。特征点喜欢待在<strong>有拐弯、有纹理</strong>的地方：窗户角、楼边、路面标线交叉处。</p>
+    <p>本篇用 OpenCV 的 <strong>ORB</strong>（第 5–6 篇细讲过）。一句话：它在图上找角点，并给每个点编一个「指纹」（描述子），方便下一步比对。</p>
+    <pre><code>orb = cv2.ORB_create(nfeatures=1200)
+kp1, des1 = orb.detectAndCompute(img_a, None)
+kp2, des2 = orb.detectAndCompute(img_b, None)</code></pre>
+    <p><code>kp</code> 是关键点位置列表，<code>des</code> 是每个点的二进制描述子。点数太少（几十个）往往撑不起可靠的 H；太平、太糊、太暗都会让检测变少。</p>
+
+    <h2 id="match">② 匹配对应点</h2>
+    <p>左图一个点的指纹，去右图里找「最像」的那个。暴力匹配器会给出最近邻；再用 <strong>Lowe 比率检验</strong>：如果「最近」和「次近」差不多像，说明不可靠，丢掉。</p>
+    <pre><code>bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+raw = bf.knnMatch(des1, des2, k=2)
+good = [m for m, n in raw if m.distance &lt; 0.75 * n.distance]</code></pre>
+    <p>0.75 就是脚本里的 <code>LOWE_RATIO</code>。调小 → 更严、匹配更少但更干净；调大 → 更多匹配，但脏匹配也多。</p>
+    <figure>
+      <img src="assets/figures/ch08_matches.png" alt="左右图之间的匹配连线">
+      <figcaption>图 8-4　比率检验后的匹配连线。多数应大致平行（场景以平移为主）；若大量交叉乱飞，说明误匹配还很多。</figcaption>
+    </figure>
+
+    <h2 id="h">③ RANSAC 估单应 H</h2>
+    <p>匹配里一定有外点（认错的对）。第 7 篇的 RANSAC 思路：随机抽 4 对点估一个 H，数有多少点「同意」这个 H（内点），留下内点最多的那个模型。</p>
+    <p>OpenCV 一行搞定：</p>
+    <pre><code># 右图点 → 左图点，得到 H，使 左 ≈ H · 右
+H, mask = cv2.findHomography(pts_right, pts_left, cv2.RANSAC, 4.0)</code></pre>
+    <p><code>4.0</code> 是重投影阈值（像素）：点经 H 映过去后，离目标点超过 4 像素就算外点。阈值太紧 → 内点变少；太松 → 脏模型也过关。</p>
+    <figure>
+      <img src="assets/figures/ch08_inliers.png" alt="RANSAC 内点连线">
+      <figcaption>图 8-5　只画 RANSAC 内点。和上图比，乱线少了——这些才是真正支撑 H 的对应。</figcaption>
+    </figure>
+    <p>H 是 3×3 矩阵（第 2–3 篇）。几何上它告诉你：右图上某个像素，搬到左图坐标系该落在哪。</p>
+    <div class="callout note">
+      <p>方向别搞反：我们要的是「右图 → 左图」的 H。若写成「左 → 右」，后面 warp 右图时就会拧到错误方向。脚本注释里写了 <code>src=右，dst=左</code>。</p>
+    </div>
+
+    <h2 id="canvas">④ 算画布大小与偏移</h2>
+    <p>右图经 H 映到左图坐标系后，可能伸出左图边界——上面、下面、左边都可能冒出来。如果画布只开成左图那么大，冒出去的部分会被裁掉，拼图就缺一块。</p>
+    <p>做法：</p>
+    <ol>
+      <li>取右图四个角，用 H 变到左图坐标；</li>
+      <li>和左图四个角放一起，求外接矩形；</li>
+      <li>若矩形左上角是负数，再乘一个纯平移 T，把一切挪到「从 (0,0) 开始」的画布上。</li>
+    </ol>
+    <p class="formula">画布上的总变换　=　T · H</p>
+    <p>白话：先按 H 对齐几何，再整体平移，让画布坐标从零起算。</p>
+    <figure>
+      <img src="assets/figures/ch08_canvas.png" alt="左图矩形与右图变换后四边形的外接画布">
+      <figcaption>图 8-6　青色块是左图，橙色四边形是右图经 H 后的位置。虚线框就是要开的画布。</figcaption>
+    </figure>
+
+    <h2 id="warp">⑤ warp 叠图</h2>
+    <p>有了 <code>T·H</code> 和画布宽高，把右图 <code>warpPerspective</code> 上去；左图用同样的 T（没有透视，只是平移）放到画布上。重叠区可以半透明混合，方便检查是否对齐：</p>
+    <pre><code>warped_b = cv2.warpPerspective(img_b, T @ H, (W, H))
+canvas_a = cv2.warpPerspective(img_a, T, (W, H))
+# 重叠区： (1-α)·A + α·B</code></pre>
+    <figure>
+      <img src="assets/figures/ch08_result.png" alt="左图上画布、右图 warp、叠图结果三栏">
+      <figcaption>图 8-7　左：左图就位。中：右图拧过来。右：叠在一起。重叠区若楼边、地线重合，说明几何对齐成功。</figcaption>
+    </figure>
+    <p>本篇叠图用简单半透明，只为「看对齐」。真正好看的接缝、羽化、多频段融合是第 10 篇；曝光跳变是第 11 篇。几何没对齐之前，融合再炫也是在糊弄双影。</p>
+
+    <h2 id="multi">多图：参照帧与误差累积</h2>
+    <p>两图搞定后，三张、五张怎么拼？常见朴素做法：</p>
+    <ul>
+      <li>选一张当<strong>参照帧</strong>（坐标系原点）；</li>
+      <li>邻居相对参照估 H；更远的图通过「邻居的邻居」链式连乘：H<sub>1→3</sub> ≈ H<sub>1→2</sub> · H<sub>2→3</sub>。</li>
+    </ul>
+    <p>参照选在<strong>端点</strong>（第一张）时，最远端要连乘很多段；选在<strong>中间</strong>时，左右两边路程更短，误差更均匀。</p>
+    <figure>
+      <img src="assets/figures/ch08_multi_ref.png" alt="端点参照与中间参照两种示意">
+      <figcaption>图 8-8　左：第 1 张当参照，箭头都挤向一端。右：中间当参照，两边路程更短。全景 App 常默认中间或「重叠最好」的那张。</figcaption>
+    </figure>
+    <p>每一段 H 都有一点点误差。链式连乘时，误差会像滚雪球——跳数越多，对齐越歪。这就是「误差累积」。</p>
+    <figure>
+      <img src="assets/figures/ch08_error_accum.png" alt="离开参照帧跳数增加时误差上升的示意曲线">
+      <figcaption>图 8-9　示意曲线：理想情况误差为 0；链式连乘时，离参照越远偏差越大。第 12 篇的 Bundle Adjustment，就是把多张图的位姿一起优化，打断这种雪球。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>本篇多图部分只建立直觉，脚本仍以两图为主。你先把两图流水线吃透；多图时记住两句话：<strong>参照别死钉在端点</strong>；<strong>链式会积误差，全局优化是后话</strong>。</p>
+    </div>
+
+    <h2 id="fail">失败时怎么排查</h2>
+    <p>拼接翻车时，不要一上来就调融合。按流水线从前往后查：</p>
+    <figure>
+      <img src="assets/figures/ch08_fail_cases.png" alt="失败症状、检查点与对策表">
+      <figcaption>图 8-10　症状 → 先查哪一步 → 常见对策。几何对齐是本篇职责；缝和曝光留给后面章节。</figcaption>
+    </figure>
+    <ul>
+      <li><strong>特征点极少</strong>：场景太平、糊、暗。换有纹理的拍摄；略增 <code>N_FEATURES</code>。</li>
+      <li><strong>匹配乱</strong>：把 <code>LOWE_RATIO</code> 调严（例如 0.7 → 0.65）；看连线是否大量交叉。</li>
+      <li><strong>H 扭曲炸裂</strong>：重叠太少、内点太少、或场景根本不是一个平面。加大重叠；检查 <code>mask</code> 内点数；远离近景大视差。</li>
+      <li><strong>几何还行但有硬缝 / 亮度跳</strong>：说明本篇任务已完成大半，去第 10–11 篇。</li>
+    </ul>
+
+    <h2 id="try">交互：逐步开关流水线</h2>
+    <p>下面用示意动画走一遍五步。左侧两块代表输入图；右侧是当前步骤的「产品」。开关某一步，看流水线推进到哪里。这不是真实 ORB，只帮你建立步骤顺序的手感。</p>
+    <div class="playground">
+      <canvas id="pipe-demo" class="demo tall" width="820" height="380" aria-label="拼接流水线逐步示意"></canvas>
+      <div class="controls">
+        <label for="step">推进到第几步</label>
+        <input id="step" type="range" min="0" max="5" step="1" value="0">
+        <output id="step-out" for="step">0</output>
+        <label for="overlap">重叠多少</label>
+        <input id="overlap" type="range" min="20" max="80" step="1" value="45">
+        <output id="overlap-out" for="overlap">45%</output>
+        <label for="noise">误匹配扰动</label>
+        <input id="noise" type="range" min="0" max="100" step="1" value="15">
+        <output id="noise-out" for="noise">15</output>
+      </div>
+      <div class="actions">
+        <button type="button" class="primary" id="pipe-play">逐步播放</button>
+        <button type="button" id="pipe-reset">复位</button>
+      </div>
+      <p class="readout" id="pipe-readout" aria-live="polite"></p>
+    </div>
+
+    <h2 id="run">运行脚本</h2>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <pre class="terminal"><code>source .venv/bin/activate   # 若尚未激活
+python code/ch08_stitch.py</code></pre>
+      <p>会写出 <code>ch08_pipeline.png</code>、<code>ch08_pair.png</code>、<code>ch08_matches.png</code>、<code>ch08_inliers.png</code>、<code>ch08_canvas.png</code>、<code>ch08_result.png</code>、<code>ch08_steps.png</code>、<code>ch08_multi_ref.png</code>、<code>ch08_error_accum.png</code>、<code>ch08_fail_cases.png</code>，以及你的 <code>ch08_my_result.png</code>。终端应打印「自检通过」。</p>
+    </div>
+
+    <h2 id="edit">改这里</h2>
+    <p>打开 <a href="code/ch08_stitch.py"><code>code/ch08_stitch.py</code></a>，改顶部参数区。只影响「你的」结果图，课文对照图仍用固定参数。</p>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>把 <code>SHIFT_X</code> 从 140 调到 220：重叠变少，看内点数和拼图是否开始歪。</li>
+        <li>把 <code>SHIFT_X</code> 调到 60：重叠很多，拼图应更稳；画布也不会宽太多。</li>
+        <li>把 <code>LOWE_RATIO</code> 调到 0.9（很松）：匹配变多但更脏，观察内点比例和结果是否变差。</li>
+        <li>把 <code>RANSAC_THRESH</code> 调到 1.0（很紧）或 12.0（很松），对比内点数与扭曲感。</li>
+        <li>改 <code>BLEND_ALPHA</code>（0.2 ↔ 0.8）：只影响重叠区谁更「抢眼」，不改变几何。</li>
+      </ol>
+    </div>
+
+    <h2 id="check">自测</h2>
+    <details class="quiz">
+      <summary>1. 两图拼接流水线的五步，按顺序是什么？</summary>
+      <p>检测特征 → 匹配 → RANSAC 估 H → 算画布 → warp 叠图。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. 为什么估 H 之前要 RANSAC，而不是直接用全部匹配点最小二乘？</summary>
+      <p>匹配里有外点（认错的对）。直接最小二乘会被外点拉歪；RANSAC 先找内点最多的模型。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. 算画布时，为什么常需要再乘一个平移 T？</summary>
+      <p>右图经 H 后可能出现负坐标；平移 T 把所有内容挪到从 (0,0) 开始的正画布，避免被裁掉。</p>
+    </details>
+    <details class="quiz">
+      <summary>4. 多图拼接时，参照帧选在端点还是中间通常更稳？为什么？</summary>
+      <p>通常选中间（或重叠最好的一张）。端点作参照时，最远端要连乘很多段 H，误差累积更严重。</p>
+    </details>
+    <details class="quiz">
+      <summary>5. 叠图有轻微双影，应先怀疑融合，还是先怀疑 H / 匹配？</summary>
+      <p>先怀疑几何（匹配、H、重叠是否够）。融合只能柔化接缝，不能把对齐错误「变正确」。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>平面单应把多张图硬贴在一个平面上，广角环拍时边缘会被「撑破」。下一篇对照<strong>平面 / 柱面 / 球面</strong>三种投影，建立选型直觉。</p>
+    <p><a href="09-projection.html">第 9 篇 · 投影模型：平面、柱面、球面</a>（待写）</p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="07-ransac.html">上一篇</a>
+      <a href="index.html">目录</a>
+      <a href="09-projection.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+      var MUTED = "#5c564c";
+      var INK = "#1c1915";
+      var stepNames = [
+        "第 0 步：只有两张输入图",
+        "第 1 步：检测特征点（角点小圆点）",
+        "第 2 步：匹配连线（扰动大时更乱）",
+        "第 3 步：RANSAC 留下较顺的内点，估出 H",
+        "第 4 步：按外接矩形铺开画布",
+        "第 5 步：warp 右图并半透明叠到左图上"
+      ];
+      var playTimer = null;
+
+      var canvas = document.getElementById("pipe-demo");
+      var stepEl = document.getElementById("step");
+      var stepOut = document.getElementById("step-out");
+      var overlapEl = document.getElementById("overlap");
+      var overlapOut = document.getElementById("overlap-out");
+      var noiseEl = document.getElementById("noise");
+      var noiseOut = document.getElementById("noise-out");
+      var readout = document.getElementById("pipe-readout");
+
+      function surface(c) {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var width = c.clientWidth || 640;
+        var height = c.clientHeight || 380;
+        var pw = Math.round(width * dpr);
+        var ph = Math.round(height * dpr);
+        if (c.width !== pw || c.height !== ph) {
+          c.width = pw;
+          c.height = ph;
+        }
+        var ctx = c.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(0, 0, width, height);
+        return { ctx: ctx, width: width, height: height };
+      }
+
+      function mulberry32(a) {
+        return function () {
+          var t = (a += 0x6d2b79f5);
+          t = Math.imul(t ^ (t >>> 15), t | 1);
+          t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+          return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        };
+      }
+
+      function drawBuilding(ctx, x, y, w, h, color) {
+        ctx.fillStyle = color;
+        ctx.fillRect(x, y, w, h);
+        ctx.fillStyle = "rgba(255,255,255,0.35)";
+        for (var wy = y + 10; wy < y + h - 8; wy += 16) {
+          for (var wx = x + 8; wx < x + w - 8; wx += 14) {
+            ctx.fillRect(wx, wy, 8, 10);
+          }
+        }
+      }
+
+      function drawScenePatch(ctx, x0, y0, w, h, offset) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(x0, y0, w, h);
+        ctx.clip();
+        ctx.fillStyle = "#e8d7c0";
+        ctx.fillRect(x0, y0, w, h);
+        ctx.fillStyle = "#d2c4b0";
+        ctx.fillRect(x0, y0 + h * 0.55, w, h * 0.45);
+        drawBuilding(ctx, x0 + 20 - offset, y0 + 40, 54, h * 0.55 - 40, "#78624e");
+        drawBuilding(ctx, x0 + 95 - offset, y0 + 28, 48, h * 0.55 - 28, "#5f6f82");
+        drawBuilding(ctx, x0 + 165 - offset, y0 + 48, 58, h * 0.55 - 48, "#6e5848");
+        drawBuilding(ctx, x0 + 245 - offset, y0 + 34, 50, h * 0.55 - 34, "#58705e");
+        ctx.strokeStyle = MUTED;
+        ctx.lineWidth = 1;
+        for (var gx = x0 - (offset % 18); gx < x0 + w; gx += 18) {
+          ctx.beginPath();
+          ctx.moveTo(gx, y0 + h * 0.55);
+          ctx.lineTo(gx, y0 + h);
+          ctx.stroke();
+        }
+        ctx.restore();
+        ctx.strokeStyle = INK;
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(x0 + 0.5, y0 + 0.5, w - 1, h - 1);
+      }
+
+      function makePoints(n, w, h, rng) {
+        var pts = [];
+        for (var i = 0; i < n; i++) {
+          pts.push({
+            x: 18 + rng() * (w - 36),
+            y: 18 + rng() * (h - 36)
+          });
+        }
+        return pts;
+      }
+
+      function draw() {
+        var s = surface(canvas);
+        var ctx = s.ctx;
+        var W = s.width;
+        var H = s.height;
+        var step = Number(stepEl.value);
+        var overlap = Number(overlapEl.value) / 100;
+        var noise = Number(noiseEl.value) / 100;
+
+        stepOut.textContent = String(step);
+        overlapOut.textContent = Math.round(overlap * 100) + "%";
+        noiseOut.textContent = String(Math.round(noise * 100));
+
+        var leftW = Math.min(210, W * 0.28);
+        var viewH = Math.min(150, H * 0.42);
+        var leftX = 24;
+        var leftY = 36;
+        var rightX = leftX + leftW + 18;
+        var rightY = leftY;
+        var shift = (1 - overlap) * 90;
+
+        drawScenePatch(ctx, leftX, leftY, leftW, viewH, 0);
+        drawScenePatch(ctx, rightX, rightY, leftW, viewH, shift);
+        ctx.fillStyle = TEAL;
+        ctx.font = "12px sans-serif";
+        ctx.fillText("左图（参照）", leftX, leftY - 8);
+        ctx.fillStyle = WAVE;
+        ctx.fillText("右图（待对齐）", rightX, rightY - 8);
+
+        var rng = mulberry32(42);
+        var ptsL = makePoints(18, leftW, viewH, rng);
+        var ptsR = ptsL.map(function (p, i) {
+          var jx = (noise > 0.01 ? (rng() - 0.5) * 40 * noise : 0);
+          var jy = (noise > 0.01 ? (rng() - 0.5) * 30 * noise : 0);
+          // 正确对应：右图点相对左图点左移 shift（场景右移的反向）
+          var good = i % 5 !== 0 || noise < 0.35;
+          if (!good) {
+            return {
+              x: 18 + rng() * (leftW - 36),
+              y: 18 + rng() * (viewH - 36),
+              outlier: true
+            };
+          }
+          return { x: p.x - shift * 0.35 + jx, y: p.y + jy, outlier: false };
+        });
+
+        if (step >= 1) {
+          ptsL.forEach(function (p) {
+            ctx.beginPath();
+            ctx.fillStyle = WAVE;
+            ctx.arc(leftX + p.x, leftY + p.y, 2.4, 0, Math.PI * 2);
+            ctx.fill();
+          });
+          ptsR.forEach(function (p) {
+            ctx.beginPath();
+            ctx.fillStyle = TEAL;
+            ctx.arc(rightX + p.x, rightY + p.y, 2.4, 0, Math.PI * 2);
+            ctx.fill();
+          });
+        }
+
+        if (step >= 2) {
+          for (var i = 0; i < ptsL.length; i++) {
+            var a = ptsL[i];
+            var b = ptsR[i];
+            var keep = step >= 3 ? !b.outlier && Math.abs(b.y - a.y) < 12 + (1 - noise) * 8 : true;
+            if (step >= 3 && !keep) continue;
+            ctx.beginPath();
+            ctx.strokeStyle = keep ? TEAL : "rgba(194,77,40,0.35)";
+            ctx.lineWidth = keep ? 1.4 : 1;
+            ctx.moveTo(leftX + a.x, leftY + a.y);
+            ctx.lineTo(rightX + b.x, rightY + b.y);
+            ctx.stroke();
+          }
+        }
+
+        // 右侧结果区
+        var panelX = rightX + leftW + 28;
+        var panelW = Math.max(180, W - panelX - 20);
+        var panelY = 28;
+        var panelH = H - 56;
+        ctx.fillStyle = "#f7f1e8";
+        ctx.fillRect(panelX, panelY, panelW, panelH);
+        ctx.strokeStyle = "#e3d9c8";
+        ctx.strokeRect(panelX + 0.5, panelY + 0.5, panelW - 1, panelH - 1);
+        ctx.fillStyle = INK;
+        ctx.font = "13px sans-serif";
+        ctx.fillText("当前产品", panelX + 12, panelY + 22);
+
+        if (step === 0) {
+          ctx.fillStyle = MUTED;
+          ctx.fillText("还没有处理：两张图各干各的。", panelX + 12, panelY + 52);
+        } else if (step === 1) {
+          ctx.fillStyle = MUTED;
+          ctx.fillText("已标出特征点。平坦处通常更少。", panelX + 12, panelY + 52);
+        } else if (step === 2) {
+          ctx.fillStyle = MUTED;
+          ctx.fillText("连线 = 候选匹配。扰动大时更乱。", panelX + 12, panelY + 52);
+        } else if (step === 3) {
+          ctx.fillStyle = MUTED;
+          ctx.fillText("RANSAC：丢掉乱线，留下顺的内点。", panelX + 12, panelY + 52);
+          ctx.fillStyle = WAVE;
+          ctx.font = "12px monospace";
+          ctx.fillText("H ≈ [ 1  0  tx ]", panelX + 12, panelY + 86);
+          ctx.fillText("    [ 0  1  ty ]", panelX + 12, panelY + 104);
+          ctx.fillText("    [ 0  0   1 ]", panelX + 12, panelY + 122);
+          ctx.fillStyle = MUTED;
+          ctx.font = "12px sans-serif";
+          ctx.fillText("（示意：接近平移）", panelX + 12, panelY + 148);
+        } else if (step >= 4) {
+          var canvasW = panelW - 36;
+          var canvasH = Math.min(150, panelH - 90);
+          var cx = panelX + 18;
+          var cy = panelY + 48;
+          // 画布虚线
+          ctx.setLineDash([5, 4]);
+          ctx.strokeStyle = INK;
+          ctx.strokeRect(cx, cy, canvasW, canvasH);
+          ctx.setLineDash([]);
+          var leftPart = canvasW * (0.42 + overlap * 0.2);
+          drawScenePatch(ctx, cx + 4, cy + 8, leftPart - 4, canvasH - 16, 0);
+          if (step >= 5) {
+            ctx.globalAlpha = 0.55;
+            drawScenePatch(ctx, cx + leftPart * 0.45, cy + 10, canvasW - leftPart * 0.45 - 8, canvasH - 20, shift * 0.2);
+            ctx.globalAlpha = 1;
+            ctx.fillStyle = TEAL;
+            ctx.fillText("叠图：重叠区半透明", panelX + 12, cy + canvasH + 28);
+          } else {
+            ctx.fillStyle = MUTED;
+            ctx.fillText("画布已开好，下一步再 warp 右图。", panelX + 12, cy + canvasH + 28);
+          }
+        }
+
+        // 底部步骤条
+        var barY = H - 22;
+        for (var k = 0; k <= 5; k++) {
+          var bx = 24 + k * ((W - 48) / 6);
+          ctx.beginPath();
+          ctx.fillStyle = k <= step ? WAVE : "#e3d9c8";
+          ctx.arc(bx + 10, barY, 6, 0, Math.PI * 2);
+          ctx.fill();
+          if (k < 5) {
+            ctx.strokeStyle = k < step ? WAVE : "#e3d9c8";
+            ctx.beginPath();
+            ctx.moveTo(bx + 18, barY);
+            ctx.lineTo(bx + (W - 48) / 6 - 2, barY);
+            ctx.stroke();
+          }
+        }
+
+        var tip = stepNames[step];
+        if (step >= 2 && noise > 0.55) {
+          tip += "　提示：误匹配扰动偏大，可先降扰动再估 H。";
+        }
+        if (step >= 4 && overlap < 0.3) {
+          tip += "　提示：重叠偏少，真实拼接更容易失败。";
+        }
+        readout.textContent = tip;
+      }
+
+      function stopPlay() {
+        if (playTimer) {
+          clearInterval(playTimer);
+          playTimer = null;
+        }
+      }
+
+      stepEl.addEventListener("input", draw);
+      overlapEl.addEventListener("input", draw);
+      noiseEl.addEventListener("input", draw);
+      window.addEventListener("resize", draw);
+
+      document.getElementById("pipe-reset").addEventListener("click", function () {
+        stopPlay();
+        stepEl.value = "0";
+        overlapEl.value = "45";
+        noiseEl.value = "15";
+        draw();
+      });
+
+      document.getElementById("pipe-play").addEventListener("click", function () {
+        stopPlay();
+        stepEl.value = "0";
+        draw();
+        playTimer = setInterval(function () {
+          var v = Number(stepEl.value);
+          if (v >= 5) {
+            stopPlay();
+            return;
+          }
+          stepEl.value = String(v + 1);
+          draw();
+        }, 900);
+      });
+
+      draw();
+    })();
+  </script>
+</body>
+</html>

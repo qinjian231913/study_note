@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 0 篇 · 现象、目标与开发环境</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        拼接与防抖 · 图像视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="00-intro.html" aria-current="page">第 0 篇</a>
+        <a href="01-coords.html">第 1 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 0 篇 · 准备 · 约 40 分钟</p>
+    <h1>现象、目标与开发环境</h1>
+    <p class="lede">这一篇先让你看清两件事：两张有重叠的照片为什么「对不齐」，以及一段视频为什么「晃」。然后分清拼接与防抖各自要什么。最后装好工具，用脚本画出同一批对照图。</p>
+    <div class="meta">
+      <span class="pill">先读：无</span>
+      <span class="pill">下一篇需要本篇的环境</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#two-goals">两件不同的事</a></li>
+        <li><a href="#stitch-look">先看拼接：重叠却对不齐</a></li>
+        <li><a href="#shake-look">再看防抖：同一场景在抖</a></li>
+        <li><a href="#try">在网页里拧一拧</a></li>
+        <li><a href="#map">后面会走到哪里</a></li>
+        <li><a href="#run">安装并运行脚本</a></li>
+        <li><a href="#edit">改参数再运行</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="two-goals">两件不同的事</h2>
+    <p>手机相册里的「全景」、运动相机里的「电子防抖」，听起来都和「把好几张画面收拾整齐」有关，但目标不一样。</p>
+    <ul>
+      <li><strong>图片拼接</strong>：输入多张有重叠的照片（或视频帧），输出一张<strong>更宽、更大</strong>的图。核心是：找对应关系，把各张图变到同一坐标系，再把接缝藏好。</li>
+      <li><strong>视频防抖</strong>：输入一段晃动的视频，输出一段<strong>看起来更稳</strong>的视频。核心是：估计每帧相对理想路径抖了多少，再反向补偿（通常还要裁掉黑边）。</li>
+    </ul>
+    <figure>
+      <img src="assets/figures/ch00_goals.png" alt="左侧两框拼成宽画布，右侧晃动曲线被压平">
+      <figcaption>图 0-1　左：拼接把 A、B 合成更宽的视野。右：防抖把高频晃动压下去，故意运镜可以保留。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>后面会看到：这两条线共用很多积木——坐标、变换、特征点、光流、相机姿态。差别主要在「拼空间」还是「稳时间」。</p>
+    </div>
+
+    <h2 id="stitch-look">先看拼接：重叠却对不齐</h2>
+    <p>假设你站在原地，先拍左边，再转向右边拍一张。两张照片会有一块<strong>重叠区域</strong>：同一栋楼、同一段路，在两张图里都出现了。</p>
+    <p>如果只是把右图往左图上硬叠，却没有把「同一物体」的像素对齐，重叠区就会出现双影。人眼对这种错位非常敏感：路面标线裂开、楼边变毛。</p>
+    <figure>
+      <img src="assets/images/ch00_scene_crops.png" alt="合成场景上标出取景框 A 与 B">
+      <figcaption>图 0-2　一张合成「街景」。橙色框是取景 A，青色框是取景 B。两框有意重叠，模拟你转头拍的两张照片。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/images/ch00_two_views.png" alt="并排的两张裁切视图 A 与 B">
+      <figcaption>图 0-3　从大图裁出的两张「照片」。脚本用 OpenCV 画了标注框，确认读图、画框这条工具链是通的。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch00_overlay_compare.png" alt="左：错位重影；右：对齐后重合">
+      <figcaption>图 0-4　左：右图多偏了几像素再半透明叠上去，重叠区发糊、出双影。右：放到正确相对位置后，重叠区重合。整套后面的配准，就是在自动做「从左走到右」这件事。</figcaption>
+    </figure>
+    <p>现在还不用会估矩阵。只要记住现象：<strong>有重叠不够，还要对齐</strong>。对齐靠的是几何变换（第 1–3 篇）和特征匹配（第 5–7 篇）。</p>
+
+    <h2 id="shake-look">再看防抖：同一场景在抖</h2>
+    <p>视频可以想成「一串连续的取景框」。手持拍摄时，取景中心不会乖乖走一条平滑曲线，而会叠上高频抖动。</p>
+    <figure>
+      <img src="assets/images/ch00_shake_frames.png" alt="同一场景在不同时刻的五帧裁切">
+      <figcaption>图 0-5　同一张大场景，按晃动路径裁出的五帧。楼和树在画面里上下左右跳——这就是「晃」。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch00_shake_path.png" alt="原始晃动路径与平滑路径，以及偏差曲线">
+      <figcaption>图 0-6　左：橙色是原始取景中心轨迹，青色是平滑后的目标轨迹。右：相对「理想运镜」的水平/竖直偏差。防抖的一种经典做法，就是估计这条橙色路径，再补偿到青色附近。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>本篇的「路径」是用合成数据演示直觉。真正工程里，路径来自特征跟踪、光流，或陀螺仪积分——这些是第 14–23 篇的重点。</p>
+    </div>
+
+    <h2 id="try">在网页里拧一拧</h2>
+    <p>下面两个示意不需要安装 Python。先建立「错位」和「晃动」的手感，再去跑脚本。</p>
+
+    <h3>重叠错位</h3>
+    <p>青色半透明块代表右图。拖动偏移，看竖线何时裂成双影、何时重合。</p>
+    <div class="playground">
+      <canvas id="overlap-demo" class="demo" width="820" height="300" aria-label="两图重叠错位示意"></canvas>
+      <div class="controls">
+        <label for="dx">水平错位 dx</label>
+        <input id="dx" type="range" min="-40" max="60" step="1" value="28">
+        <output id="dx-out" for="dx">28 px</output>
+        <label for="dy">竖直错位 dy</label>
+        <input id="dy" type="range" min="-30" max="30" step="1" value="12">
+        <output id="dy-out" for="dy">12 px</output>
+      </div>
+      <div class="actions">
+        <button type="button" class="primary" id="overlap-align">对齐（dx=0, dy=0）</button>
+        <button type="button" id="overlap-reset">恢复示例错位</button>
+      </div>
+      <p class="readout" id="overlap-readout" aria-live="polite"></p>
+    </div>
+
+    <h3>取景中心晃动</h3>
+    <p>点表示每一帧的取景中心。加大抖动幅度，轨迹变毛；点「平滑预览」看目标路径大概长什么样。</p>
+    <div class="playground">
+      <canvas id="shake-demo" class="demo" width="820" height="300" aria-label="取景中心晃动示意"></canvas>
+      <div class="controls">
+        <label for="amp">抖动幅度</label>
+        <input id="amp" type="range" min="0" max="40" step="1" value="18">
+        <output id="amp-out" for="amp">18 px</output>
+      </div>
+      <div class="actions">
+        <button type="button" class="primary" id="shake-play" aria-pressed="false">播放</button>
+        <button type="button" id="shake-smooth">平滑预览开/关</button>
+        <button type="button" id="shake-reset">恢复初始</button>
+      </div>
+      <p class="readout" id="shake-readout" aria-live="polite"></p>
+    </div>
+
+    <h2 id="map">后面会走到哪里</h2>
+    <p>这一套笔记按四条线推进。本篇只负责「看见问题 + 工具可用」。</p>
+    <div class="table-scroll">
+      <table>
+        <caption>表 0-1　四条主线（与目录页一致）</caption>
+        <thead>
+          <tr><th>主线</th><th>篇目</th><th>你将能做什么</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>几何与配准</td><td>第 0–7 篇</td><td>用变换和特征把两张图对上</td></tr>
+          <tr><td>图片拼接</td><td>第 8–13 篇</td><td>拼全景，处理接缝、曝光与全局优化</td></tr>
+          <tr><td>光流重点</td><td>第 14–18 篇</td><td>从零看懂像素如何「流动」</td></tr>
+          <tr><td>防抖 / 陀螺 / RS</td><td>第 19–26 篇</td><td>二维稳像、卷帘快门、陀螺仪 EIS</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>若你最关心光流：第 1–3 篇把坐标与变换摸熟后，可以跳到第 14 篇；稳像与陀螺建议在光流之后再读。</p>
+
+    <h2 id="run">安装并运行脚本</h2>
+    <p>网页上的示意关掉就没了。脚本用 NumPy 造场景，用 OpenCV 裁切、画框、写图，用 Matplotlib 出带中文标题的对照图。</p>
+    <pre><code>import cv2
+import numpy as np
+
+scene = ...                    # 一张大图（脚本里合成）
+view = scene[top:top+h, left:left+w].copy()
+cv2.rectangle(view, (8, 8), (128, 48), (194, 77, 40), 2)
+cv2.imwrite("out.png", view)</code></pre>
+    <p>记住一件小事：OpenCV 默认按 <strong>BGR</strong> 存颜色通道，Matplotlib / 浏览器按 <strong>RGB</strong>。脚本里对 Matplotlib 显示时写了 <code>[:, :, ::-1]</code>，就是在倒通道。</p>
+
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <p>如果还没有 Python，到 <a href="https://www.python.org/downloads/">python.org</a> 安装，并勾选加入 PATH。然后打开终端，进入本文件夹（能看见 <code>index.html</code>）：</p>
+      <pre class="terminal"><code>python3 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+python -m pip install -r code/requirements.txt
+python code/ch00_intro.py</code></pre>
+      <p>建议用虚拟环境，避免和系统里其它 OpenCV 安装打架。运行成功后终端会出现「自检通过」，并写出：</p>
+      <ul>
+        <li><code>assets/figures/ch00_goals.png</code>、<code>ch00_overlay_compare.png</code>、<code>ch00_shake_path.png</code>：课文对照图</li>
+        <li><code>assets/images/ch00_scene_crops.png</code>、<code>ch00_two_views.png</code>、<code>ch00_shake_frames.png</code>：OpenCV 导出的示意</li>
+        <li><code>ch00_my_overlap.png</code>、<code>ch00_my_shake.png</code>：只跟随脚本顶部「改这里」</li>
+        <li>若本机支持，还会写 <code>assets/images/ch00_shake_demo.mp4</code> 短视频</li>
+      </ul>
+    </div>
+
+    <div class="callout note">
+      <h3>常见情况</h3>
+      <ul>
+        <li>提示 <code>No module named cv2</code>：确认已激活虚拟环境，再执行一次 <code>pip install -r code/requirements.txt</code>。</li>
+        <li>系统 Python 能 <code>import cv2</code> 却立刻报动态库缺失：优先用本目录的 <code>.venv</code>，安装的是 PyPI 的 <code>opencv-python</code>。</li>
+        <li>图上中文变方框：看终端打印的「作图字体」。macOS 一般会选到苹方。</li>
+      </ul>
+    </div>
+
+    <h2 id="edit">改参数再运行</h2>
+    <p>用编辑器打开 <a href="code/ch00_intro.py"><code>code/ch00_intro.py</code></a>。顶部「改这里」只影响你的两张图；课文对照图仍按固定参数重画。</p>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>把 <code>OVERLAP_SHIFT_X = 28</code> 改成 <code>0</code>，<code>OVERLAP_SHIFT_Y</code> 也改成 <code>0</code>，保存后运行。打开 <code>ch00_my_overlap.png</code>，重叠区应基本重合，接近图 0-4 右侧。</li>
+        <li>把两个偏移改成 <code>50</code> 和 <code>25</code>，再运行。双影应更夸张。</li>
+        <li>把 <code>SHAKE_AMPLITUDE = 18</code> 改成 <code>4</code>，再改成 <code>35</code>，对比 <code>ch00_my_shake.png</code> 里轨迹的毛刺。</li>
+      </ol>
+    </div>
+    <p>错位参数模拟的是「还没配准」；抖动幅度模拟的是「还没平滑」。后面章节会分别把这两类数，换成算法估出来的变换与路径。</p>
+
+    <h2 id="check">自测</h2>
+    <p>先自己答，再展开。</p>
+    <details class="quiz">
+      <summary>1. 拼接和防抖的输出目标有何不同？</summary>
+      <p>拼接要更大的空间视野（更宽的图）；防抖要更稳的时间观感（晃动被压住的视频）。二者都可能用到对齐与变换，但评价标准不同。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. 两张图有重叠，硬叠在一起仍可能很难看。缺的是什么？</summary>
+      <p>缺的是对齐：把同一物理点变到同一像素位置。只有重叠区域、却没有正确的相对几何，就会重影。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. OpenCV 读进来的彩色图，通道顺序默认是什么？用 Matplotlib 显示前常常要做什么？</summary>
+      <p>默认是 BGR。交给 Matplotlib / 按 RGB 理解的工具前，常用 <code>[:, :, ::-1]</code> 把通道倒成 RGB。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>这一篇只建立现象和工具。下一篇会把「像素坐标」说清楚：原点在哪、x/y 朝哪，以及平移、旋转、缩放怎样改一张图。</p>
+    <p><a href="01-coords.html">第 1 篇 · 图像坐标与刚体直觉</a></p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="index.html">目录</a>
+      <a href="01-coords.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var INK = "#1c1915";
+      var MUTED = "#5c564c";
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+      var showSmooth = true;
+      var playing = false;
+      var frame = 0;
+      var lastTime = null;
+      var nFrames = 48;
+
+      function surface(canvas) {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var width = canvas.clientWidth || 640;
+        var height = canvas.clientHeight || 300;
+        var pw = Math.round(width * dpr);
+        var ph = Math.round(height * dpr);
+        if (canvas.width !== pw || canvas.height !== ph) {
+          canvas.width = pw;
+          canvas.height = ph;
+        }
+        var ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(0, 0, width, height);
+        return { ctx: ctx, width: width, height: height };
+      }
+
+      function drawScene(ctx, x0, y0, w, h, alpha) {
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = "#ece4d6";
+        ctx.fillRect(x0, y0, w, h / 2);
+        ctx.fillStyle = "#d2c6b2";
+        ctx.fillRect(x0, y0 + h / 2, w, h / 2);
+        var buildings = [
+          [0.12, 0.42, "#5a6e96"],
+          [0.28, 0.34, "#466082"],
+          [0.52, 0.48, "#645a46"],
+          [0.72, 0.38, "#50786e"]
+        ];
+        buildings.forEach(function (b) {
+          var bw = w * 0.1;
+          var bh = h * b[1];
+          var bx = x0 + w * b[0];
+          var by = y0 + h / 2 - bh;
+          ctx.fillStyle = b[2];
+          ctx.fillRect(bx, by, bw, bh);
+        });
+        ctx.strokeStyle = "#f7f7f7";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        var y = y0 + h * 0.68;
+        var x;
+        for (x = x0 + 10; x < x0 + w - 10; x += 36) {
+          ctx.moveTo(x, y);
+          ctx.lineTo(x + 20, y);
+        }
+        ctx.stroke();
+        ctx.fillStyle = "#327846";
+        ctx.beginPath();
+        ctx.arc(x0 + w * 0.42, y0 + h * 0.42, Math.min(w, h) * 0.08, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      function drawOverlap() {
+        var canvas = document.getElementById("overlap-demo");
+        var box = surface(canvas);
+        var ctx = box.ctx;
+        var width = box.width;
+        var height = box.height;
+        var dx = Number(document.getElementById("dx").value);
+        var dy = Number(document.getElementById("dy").value);
+        var left = 36;
+        var top = 28;
+        var vw = Math.min(300, width * 0.42);
+        var vh = Math.min(210, height - 56);
+
+        drawScene(ctx, left, top, vw, vh, 1);
+        ctx.strokeStyle = WAVE;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(left, top, vw, vh);
+        ctx.fillStyle = WAVE;
+        ctx.font = "14px Microsoft YaHei, sans-serif";
+        ctx.fillText("图 A", left + 8, top + 20);
+
+        var ox = left + 110 + dx;
+        var oy = top + dy;
+        drawScene(ctx, ox, oy, vw, vh, 0.45);
+        ctx.strokeStyle = TEAL;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(ox, oy, vw, vh);
+        ctx.fillStyle = TEAL;
+        ctx.fillText("图 B（半透明）", ox + 8, oy + 20);
+
+        var err = Math.abs(dx) + Math.abs(dy);
+        document.getElementById("dx-out").textContent = dx + " px";
+        document.getElementById("dy-out").textContent = dy + " px";
+        document.getElementById("overlap-readout").textContent =
+          err === 0
+            ? "当前已对齐：重叠区的楼边和标线应重合。拼接算法要自动找到接近这样的相对位置。"
+            : "当前错位 |dx|+|dy| = " + err + " 像素。路面虚线和楼边出现双影；数值越大，硬叠越难看。";
+      }
+
+      function pathPoints(amp) {
+        var pts = [];
+        var i;
+        for (i = 0; i < nFrames; i++) {
+          var t = i / (nFrames - 1);
+          var idealX = 90 + 220 * t;
+          var idealY = 120 + 18 * Math.sin(Math.PI * t);
+          var jx = amp * 0.35 * Math.sin(2 * Math.PI * 7 * t);
+          var jy = amp * 0.45 * Math.sin(2 * Math.PI * 5 * t + 0.4);
+          pts.push({
+            t: t,
+            rawX: idealX + jx,
+            rawY: idealY + jy,
+            idealX: idealX,
+            idealY: idealY
+          });
+        }
+        var smooth = pts.map(function (p) { return { x: p.rawX, y: p.rawY }; });
+        var k;
+        for (k = 2; k < nFrames - 2; k++) {
+          smooth[k] = {
+            x: (pts[k - 2].rawX + pts[k - 1].rawX + pts[k].rawX + pts[k + 1].rawX + pts[k + 2].rawX) / 5,
+            y: (pts[k - 2].rawY + pts[k - 1].rawY + pts[k].rawY + pts[k + 1].rawY + pts[k + 2].rawY) / 5
+          };
+        }
+        return { pts: pts, smooth: smooth };
+      }
+
+      function drawShake() {
+        var canvas = document.getElementById("shake-demo");
+        var box = surface(canvas);
+        var ctx = box.ctx;
+        var width = box.width;
+        var height = box.height;
+        var amp = Number(document.getElementById("amp").value);
+        var data = pathPoints(amp);
+        var padL = 40;
+        var padT = 20;
+        var padR = 20;
+        var padB = 36;
+        var plotW = width - padL - padR;
+        var plotH = height - padT - padB;
+
+        function X(x) { return padL + (x - 60) / 320 * plotW; }
+        function Y(y) { return padT + (y - 70) / 120 * plotH; }
+
+        ctx.strokeStyle = "#e6dccb";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(padL, padT, plotW, plotH);
+
+        ctx.beginPath();
+        ctx.strokeStyle = WAVE;
+        ctx.lineWidth = 1.8;
+        data.pts.forEach(function (p, i) {
+          var x = X(p.rawX);
+          var y = Y(p.rawY);
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+
+        if (showSmooth) {
+          ctx.beginPath();
+          ctx.strokeStyle = TEAL;
+          ctx.lineWidth = 2.4;
+          data.smooth.forEach(function (p, i) {
+            var x = X(p.x);
+            var y = Y(p.y);
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          });
+          ctx.stroke();
+        }
+
+        var cur = data.pts[frame];
+        ctx.fillStyle = WAVE;
+        ctx.beginPath();
+        ctx.arc(X(cur.rawX), Y(cur.rawY), 5, 0, Math.PI * 2);
+        ctx.fill();
+
+        // 小取景框
+        var vw = 54;
+        var vh = 36;
+        ctx.strokeStyle = INK;
+        ctx.lineWidth = 1.2;
+        ctx.strokeRect(X(cur.rawX) - vw / 2, Y(cur.rawY) - vh / 2, vw, vh);
+
+        ctx.fillStyle = MUTED;
+        ctx.font = "13px Microsoft YaHei, sans-serif";
+        ctx.fillText("取景中心轨迹", padL, height - 12);
+
+        document.getElementById("amp-out").textContent = amp + " px";
+        document.getElementById("shake-readout").textContent =
+          "幅度 = " + amp + " px，当前帧 " + frame + "/" + (nFrames - 1) +
+          "。橙色为晃动路径" + (showSmooth ? "，青色为平滑预览" : "") +
+          "。防抖要估计晃动，再把画面补回到更顺的路径附近。";
+      }
+
+      function loop(now) {
+        if (!playing) {
+          lastTime = null;
+          return;
+        }
+        if (lastTime !== null && now - lastTime > 70) {
+          frame = (frame + 1) % nFrames;
+          lastTime = now;
+          drawShake();
+        } else if (lastTime === null) {
+          lastTime = now;
+        }
+        requestAnimationFrame(loop);
+      }
+
+      ["dx", "dy"].forEach(function (id) {
+        document.getElementById(id).addEventListener("input", drawOverlap);
+      });
+      document.getElementById("overlap-align").addEventListener("click", function () {
+        document.getElementById("dx").value = "0";
+        document.getElementById("dy").value = "0";
+        drawOverlap();
+      });
+      document.getElementById("overlap-reset").addEventListener("click", function () {
+        document.getElementById("dx").value = "28";
+        document.getElementById("dy").value = "12";
+        drawOverlap();
+      });
+
+      document.getElementById("amp").addEventListener("input", function () {
+        drawShake();
+      });
+      document.getElementById("shake-play").addEventListener("click", function () {
+        playing = !playing;
+        this.textContent = playing ? "暂停" : "播放";
+        this.setAttribute("aria-pressed", playing ? "true" : "false");
+        if (playing) requestAnimationFrame(loop);
+      });
+      document.getElementById("shake-smooth").addEventListener("click", function () {
+        showSmooth = !showSmooth;
+        drawShake();
+      });
+      document.getElementById("shake-reset").addEventListener("click", function () {
+        playing = false;
+        frame = 0;
+        showSmooth = true;
+        document.getElementById("shake-play").textContent = "播放";
+        document.getElementById("shake-play").setAttribute("aria-pressed", "false");
+        document.getElementById("amp").value = "18";
+        drawShake();
+      });
+
+      window.addEventListener("resize", function () {
+        drawOverlap();
+        drawShake();
+      });
+
+      drawOverlap();
+      drawShake();
+    })();
+  </script>
+  <noscript>
+    <div class="wrap">
+      <p class="callout note">浏览器禁用了脚本时，滑块不会动。上面的静态图和 Python 脚本仍然可以阅读、运行。</p>
+    </div>
+  </noscript>
+</body>
+</html>

@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 21 篇 · Rolling Shutter：一行一行的时间差</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        拼接与防抖 · 图像视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="20-crop-path-ois.html">第 20 篇</a>
+        <a href="21-rolling-shutter.html" aria-current="page">第 21 篇</a>
+        <a href="22-gyro-imu.html">第 22 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 21 篇 · 重点 · 约 70 分钟</p>
+    <h1>Rolling Shutter：一行一行的时间差</h1>
+    <p class="lede">手机拍视频时，画面往往不是「整幅同一瞬间」，而是从上到下一行行读出。相机在读出期间还在晃，竖线就变斜、整幅像果冻。本篇用合成动画建立逐行曝光模型，看清旋转与平移各自长什么样，以及为何光流和二维稳像会被它污染。</p>
+    <div class="meta">
+      <span class="pill">先读：第 19–20 篇直觉即可</span>
+      <span class="pill">重点篇 · 多交互</span>
+      <span class="pill">下一篇用陀螺掰直 RS</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#see">先看见：斜切、果冻、弯柱子</a></li>
+        <li><a href="#gs-rs">全局快门 vs 卷帘快门</a></li>
+        <li><a href="#model">逐行曝光时刻模型</a></li>
+        <li><a href="#play">交互：播放一行行曝光</a></li>
+        <li><a href="#rot-trans">纯旋转 vs 纯平移</a></li>
+        <li><a href="#pollute">为何污染光流与稳像</a></li>
+        <li><a href="#try">交互：拧角速度与读出时间</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改这里</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="see">先看见：斜切、果冻、弯柱子</h2>
+    <p>打开手机，对着电线杆或门框快速左右甩一下，常会看到三种怪现象：</p>
+    <ul>
+      <li><strong>斜切（skew）</strong>：本来竖直的柱子变成斜的，但还大致是直线。</li>
+      <li><strong>果冻（jello）</strong>：整幅画面像果冻一样波浪扭动，上下左右不同步。</li>
+      <li><strong>弯柱子</strong>：甩动变速时，竖线不只倾斜，还会弯成弧。</li>
+    </ul>
+    <p>这些不是镜头「弯曲了世界」，而是<strong>同一帧里，不同行来自不同时刻</strong>。脚本用合成街景复现三类畸变：</p>
+    <figure>
+      <img src="assets/figures/ch21_phenomena.png" alt="静止、斜切、果冻、弯柱子四种对照">
+      <figcaption>图 21-1　从左到右：静止（或全局快门）、匀速转动斜切、高频抖动果冻、变速转动弯柱子。注意柱顶小帽：弯的时候上下对不齐更明显。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>生活类比：你用扫描仪扫一张纸，同时把纸往旁边抽——扫出来的字会歪。卷帘快门就是「边扫边动」的相机。</p>
+    </div>
+
+    <h2 id="gs-rs">全局快门 vs 卷帘快门</h2>
+    <p><strong>全局快门（Global Shutter）</strong>：整幅传感器几乎在同一时刻曝光、读出。工业相机、部分电影机常见。一帧 = 一个瞬间。</p>
+    <p><strong>卷帘快门（Rolling Shutter）</strong>：按行（有时按列）依次曝光与读出。绝大多数手机 CMOS 都是这种。一帧 = 一小段延时摄影。</p>
+    <figure>
+      <img src="assets/figures/ch21_global_vs_rolling.png" alt="全局快门所有行同时刻，卷帘快门行间有时间差">
+      <figcaption>图 21-2　左：全局——每行标签都是 t₀。右：卷帘——从上到下时刻递增。手机视频默认在右边。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch21_readout_timeline.png" alt="读出指针从上扫到下的时间轴">
+      <figcaption>图 21-3　把一帧拆开看：读出指针像窗帘从上往下扫。扫完才算这一帧「拍完」。</figcaption>
+    </figure>
+    <p>若相机完全静止，卷帘和全局看起来一样——因为每一行看到的世界相同。问题出在<strong>读出期间相机还在动</strong>。</p>
+
+    <h2 id="model">逐行曝光时刻模型</h2>
+    <p>设图像高为 H 行，整帧读出耗时为 T<sub>readout</sub>（相对「一帧时长」的比例更方便想，例如 0.5 表示半帧时间才扫完）。约定第 0 行最先曝光，则第 y 行的时刻：</p>
+    <p class="formula">t(y) = t₀ + (y / H) · T<sub>readout</sub></p>
+    <p>白话：<strong>行号越大，时钟越晚</strong>。中间那一行大约在读出过程的正中间。</p>
+    <figure>
+      <img src="assets/figures/ch21_row_time_model.png" alt="行号与曝光时刻的线性关系及白话说明">
+      <figcaption>图 21-4　左：t 随 y 线性增加。右：记住口诀——上面的行记住较早姿态，下面的行记住较晚姿态。</figcaption>
+    </figure>
+    <p>相机在动时，第 y 行记下的是时刻 t(y) 的投影。对远处竖直柱子、主要是水平运动时，可以近似写成「这一行整体水平挪了一点」：</p>
+    <p class="formula">Δx(y) ≈ v<sub>image</sub> · ( t(y) − t<sub>mid</sub> )</p>
+    <p>这里 t<sub>mid</sub> 是中间行的时刻。减去它，是为了让画面中心别整幅漂走，只留下「上下相对错位」——也就是你眼睛看到的斜切。</p>
+    <div class="callout note">
+      <p>v<sub>image</sub> 从哪来？纯平移时它大致是 (f/Z)·v<sub>3D</sub>（焦距、深度、横向速度）。纯偏航旋转时，小角度下 v<sub>image</sub> ≈ f · ω（ω 是偏航角速度）。本篇先把公式当成「给每行贴位移」，几何细节第 22–23 篇用陀螺接上。</p>
+    </div>
+
+    <h2 id="play">交互：播放一行行曝光</h2>
+    <p>点播放，看读出指针往下走：左侧是「正在形成的卷帘帧」，右侧对照「若用全局快门会拍到什么」。拖动偏航速度，柱子会边扫边斜。</p>
+    <div class="playground">
+      <canvas id="rs-play" class="demo tall" width="820" height="360" aria-label="逐行曝光播放示意"></canvas>
+      <div class="controls">
+        <label for="yaw-play">偏航速度</label>
+        <input id="yaw-play" type="range" min="-20" max="20" step="1" value="10">
+        <output id="yaw-play-out" for="yaw-play">10 °/帧</output>
+        <label for="readout-play">读出比例 T_readout</label>
+        <input id="readout-play" type="range" min="0" max="100" step="5" value="60">
+        <output id="readout-play-out" for="readout-play">0.60</output>
+      </div>
+      <div class="actions">
+        <button type="button" class="primary" id="rs-play-btn" aria-pressed="false">播放</button>
+        <button type="button" id="rs-step">单步下一行带</button>
+        <button type="button" id="rs-reset">重置</button>
+      </div>
+      <p class="readout" id="rs-play-readout" aria-live="polite"></p>
+    </div>
+
+    <h2 id="rot-trans">纯旋转 vs 纯平移</h2>
+    <p>两种最干净的合成实验：场景里的柱子<strong>完全静止</strong>，只让相机动。</p>
+    <ul>
+      <li><strong>只有偏航旋转</strong>：角速度近似恒定 → Δx(y) 对 y 接近一条斜线 → 柱子变成<strong>斜直线</strong>。</li>
+      <li><strong>只有横向平移</strong>（远景、深度差不多）：像平面速度近似恒定 → 同样是斜直线。幅度由速度决定。</li>
+    </ul>
+    <p>看起来很像？对——在「远平面 + 匀速」假设下，两者的 RS 斜切形状相似。差别要靠深度变化、近景视差、或陀螺/IMU（知道是在转还是在挪）才能拆开。第 23 篇会用角速度直接按行反投。</p>
+    <figure>
+      <img src="assets/figures/ch21_rotation_vs_translation.png" alt="旋转与平移各自的 RS 畸变及位移曲线">
+      <figcaption>图 21-5　上排：纯旋转。下排：纯平移。右侧曲线是每一行的水平位移；相对中线反对称，所以中心不太漂，两边往相反方向扯。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>失败案例：若角速度<strong>不恒定</strong>（猛甩一下），位移里出现 t² 项，竖线变弯——就是图 21-1 最右的「弯柱子」。果冻则多来自读出期间的高频小抖动，上下半幅剪切方向来回变。</p>
+    </div>
+
+    <h2 id="pollute">为何污染光流与稳像</h2>
+    <p>光流（第 14–18 篇）默认：灰度变化来自物体或相机的真实运动，并且<strong>一帧内部几何是「某一瞬间」的投影</strong>。卷帘打破了后半句。</p>
+    <p>竖直柱子其实没动，但 RS 帧里它已经斜了。估光流时，算法会在柱子边缘看到虚假的水平位移；再用这些流去估帧间相似/仿射变换，路径就被污染。二维稳像按这条脏路径去补，有时反而把果冻拧得更夸张。</p>
+    <figure>
+      <img src="assets/figures/ch21_flow_pollution.png" alt="RS 造成伪光流并污染稳像的说明图">
+      <figcaption>图 21-6　左：真相是竖直静止。中：RS 帧已斜，箭头是「看起来像」的流。右：稳像与光流如何被骗，以及为何后面要请陀螺出场。</figcaption>
+    </figure>
+    <p>一句话：<strong>RS 把「时间误差」伪装成「空间运动」</strong>。纯视觉方法在快速转动时很难单独拆干净，所以手机 EIS 常结合陀螺仪（第 22–23 篇）。</p>
+
+    <h2 id="try">交互：拧角速度与读出时间</h2>
+    <p>左侧全局快门，右侧卷帘。加大 |角速度| 或读出比例，斜切立刻加重。也可以切换成「果冻」模式看波浪。</p>
+    <div class="playground">
+      <canvas id="rs-compare" class="demo tall" width="820" height="340" aria-label="全局与卷帘对照"></canvas>
+      <div class="controls">
+        <label for="mode">运动模式</label>
+        <select id="mode">
+          <option value="yaw" selected>纯偏航（斜切）</option>
+          <option value="jelly">果冻抖动</option>
+          <option value="accel">角加速（弯柱子）</option>
+        </select>
+        <label for="yaw2">强度</label>
+        <input id="yaw2" type="range" min="0" max="24" step="1" value="10">
+        <output id="yaw2-out" for="yaw2">10</output>
+        <label for="readout2">T_readout</label>
+        <input id="readout2" type="range" min="0" max="100" step="5" value="55">
+        <output id="readout2-out" for="readout2">0.55</output>
+      </div>
+      <div class="actions">
+        <button type="button" class="primary" id="cmp-reset">恢复默认</button>
+      </div>
+      <p class="readout" id="cmp-readout" aria-live="polite"></p>
+    </div>
+
+    <h2 id="run">运行脚本</h2>
+    <p>网页示意关掉就没了。脚本会生成全部课文对照图，并按你改的参数写出 <code>ch21_my_rs.png</code>。</p>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <pre class="terminal"><code>source .venv/bin/activate   # 若尚未激活
+MPLCONFIGDIR=/tmp/mpl-cache python code/ch21_rolling_shutter.py</code></pre>
+      <p>会写出 <code>ch21_global_vs_rolling.png</code>、<code>ch21_phenomena.png</code>、<code>ch21_rotation_vs_translation.png</code>、<code>ch21_flow_pollution.png</code> 等，以及你的 <code>ch21_my_rs.png</code>。</p>
+    </div>
+
+    <h2 id="edit">改这里</h2>
+    <p>打开 <a href="code/ch21_rolling_shutter.py"><code>code/ch21_rolling_shutter.py</code></a>，只改顶部这一段：</p>
+    <pre><code># ===== 改这里 =====
+READOUT_FRAC = 0.55
+YAW_DEG_PER_FRAME = 8.0
+TRANS_PX_PER_FRAME = 28.0
+N_PILLARS = 5
+# ==================</code></pre>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>把 <code>READOUT_FRAC</code> 改成 <code>0.05</code>，再跑：斜切应几乎消失（接近全局快门）。</li>
+        <li>把 <code>YAW_DEG_PER_FRAME</code> 改成 <code>-15</code>：斜切方向反过来。</li>
+        <li>只加大 <code>TRANS_PX_PER_FRAME</code>、角速度保持较小：对比「平移斜切」与「旋转斜切」谁更狠。</li>
+        <li>把 <code>N_PILLARS</code> 改成 <code>8</code>，看更密的柱林是否更容易察觉弯曲与错位。</li>
+        <li>故意设 <code>READOUT_FRAC = 0</code> 且很大角速度：位移应全是 0（读出瞬间完成，没有行间时间差）。</li>
+      </ol>
+    </div>
+
+    <h2 id="check">自测</h2>
+    <details class="quiz">
+      <summary>1. 全局快门和卷帘快门，本质差别是什么？</summary>
+      <p>全局：整幅近似同一时刻。卷帘：逐行（或逐列）依次曝光/读出，一行一个时刻。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. 为什么相机完全静止时，卷帘看起来也「正常」？</summary>
+      <p>因为每一行看到的世界相同，时间差不会造成几何错位。动起来才暴露问题。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. 公式 t(y) = t₀ + (y/H)·T_readout 在说什么？</summary>
+      <p>第 y 行的曝光时刻随行号线性变晚；T_readout 越大，上下行时间差越大，斜切越明显。</p>
+    </details>
+    <details class="quiz">
+      <summary>4. 匀速偏航时，竖直柱子通常变成斜直线还是曲线？什么情况下会弯？</summary>
+      <p>匀速时近似斜直线。角速度随时间变化（有角加速）时会出现弯柱子。</p>
+    </details>
+    <details class="quiz">
+      <summary>5. 为什么说 Rolling Shutter 会污染光流和二维稳像？</summary>
+      <p>RS 把帧内时间差伪装成空间位移，光流估出虚假运动，帧间变换与路径被污染，按脏路径补偿可能加重果冻。</p>
+    </details>
+    <details class="quiz">
+      <summary>6. 纯视觉稳像在快速甩动时为何常要求助陀螺？</summary>
+      <p>陀螺直接测角速度，不太依赖纹理；还能按行时间反投，专门校正 RS。纯视觉难以单独拆开「真运动」与「行间时间误差」。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>下一篇进入陀螺仪与 IMU：角速度如何积分成姿态、为什么会漂、以及怎样和视频时间戳对齐——为第 23 篇「按行掰直 RS + 陀螺 EIS」打地基。</p>
+    <p><a href="22-gyro-imu.html">第 22 篇 · 陀螺仪与 IMU：角速度如何变成姿态</a>（待写）</p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="20-crop-path-ois.html">上一篇</a>
+      <a href="index.html">目录</a>
+      <a href="22-gyro-imu.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+      var MUTED = "#5c564c";
+      var INK = "#1c1915";
+
+      function surface(canvas) {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var width = canvas.clientWidth || 640;
+        var height = canvas.clientHeight || 340;
+        var pw = Math.round(width * dpr);
+        var ph = Math.round(height * dpr);
+        if (canvas.width !== pw || canvas.height !== ph) {
+          canvas.width = pw;
+          canvas.height = ph;
+        }
+        var ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(0, 0, width, height);
+        return { ctx: ctx, width: width, height: height };
+      }
+
+      function pillarXs(w, n) {
+        var xs = [];
+        for (var i = 0; i < n; i++) {
+          xs.push(w * (0.18 + (0.64 * i) / Math.max(n - 1, 1)));
+        }
+        return xs;
+      }
+
+      function drawScene(ctx, x0, y0, w, h, dxAtRow, progressRows) {
+        // 背景
+        ctx.fillStyle = "#ece4d6";
+        ctx.fillRect(x0, y0, w, h / 2);
+        ctx.fillStyle = "#d6cec0";
+        ctx.fillRect(x0, y0 + h / 2, w, h / 2);
+        ctx.strokeStyle = "#aaa294";
+        ctx.beginPath();
+        ctx.moveTo(x0, y0 + h / 2);
+        ctx.lineTo(x0 + w, y0 + h / 2);
+        ctx.stroke();
+
+        var maxRow = progressRows == null ? h : Math.max(0, Math.min(h, progressRows));
+        var xs = pillarXs(w, 5);
+        var colors = [WAVE, TEAL, "#3c5aa0", "#28785a", "#c24d28"];
+
+        // 未读出区域遮罩思路：先画全部，再盖住未读出
+        for (var i = 0; i < xs.length; i++) {
+          for (var y = 0; y < maxRow; y++) {
+            var dx = dxAtRow(y, h);
+            var pw = 10;
+            var px = x0 + xs[i] + dx - pw / 2;
+            ctx.fillStyle = colors[i % colors.length];
+            ctx.fillRect(px, y0 + y, pw, 1.2);
+          }
+        }
+
+        // 边框
+        ctx.strokeStyle = INK;
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(x0 + 0.5, y0 + 0.5, w - 1, h - 1);
+
+        if (progressRows != null && progressRows < h) {
+          ctx.fillStyle = "rgba(28,25,21,0.08)";
+          ctx.fillRect(x0, y0 + progressRows, w, h - progressRows);
+          ctx.strokeStyle = WAVE;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(x0, y0 + progressRows);
+          ctx.lineTo(x0 + w, y0 + progressRows);
+          ctx.stroke();
+        }
+      }
+
+      function dxYaw(y, h, yaw, readout) {
+        var t = (y / Math.max(h - 1, 1)) * readout;
+        var tMid = 0.5 * readout;
+        var f = 0.9 * 200;
+        var omega = (yaw * Math.PI) / 180;
+        return f * omega * (t - tMid) * 0.45;
+      }
+
+      function dxJelly(y, h, amp) {
+        return amp * Math.sin((2 * Math.PI * y) / h);
+      }
+
+      function dxAccel(y, h, amp, readout) {
+        var t = (y / Math.max(h - 1, 1)) * readout;
+        var tMid = 0.5 * readout;
+        var dt = t - tMid;
+        return amp * 1.2 * dt + amp * 14 * dt * dt;
+      }
+
+      // -------- 播放器：逐行曝光 --------
+      var playCanvas = document.getElementById("rs-play");
+      var yawPlay = document.getElementById("yaw-play");
+      var yawPlayOut = document.getElementById("yaw-play-out");
+      var readoutPlay = document.getElementById("readout-play");
+      var readoutPlayOut = document.getElementById("readout-play-out");
+      var playBtn = document.getElementById("rs-play-btn");
+      var stepBtn = document.getElementById("rs-step");
+      var resetBtn = document.getElementById("rs-reset");
+      var playReadout = document.getElementById("rs-play-readout");
+      var playRow = 0;
+      var playing = false;
+      var playTimer = null;
+      var BAND = 6;
+
+      function renderPlay() {
+        var s = surface(playCanvas);
+        var ctx = s.ctx;
+        var W = s.width;
+        var H = s.height;
+        var panelW = Math.min(300, (W - 60) / 2);
+        var panelH = Math.min(240, H - 70);
+        var y0 = 42;
+        var leftX = (W - 2 * panelW - 40) / 2;
+        var rightX = leftX + panelW + 40;
+        var yaw = +yawPlay.value;
+        var readout = (+readoutPlay.value) / 100;
+
+        function dx(y, h) {
+          return dxYaw(y, h, yaw, readout);
+        }
+
+        ctx.fillStyle = INK;
+        ctx.font = "600 14px sans-serif";
+        ctx.fillText("卷帘：正在读出", leftX, 28);
+        ctx.fillText("全局：同一瞬间", rightX, 28);
+
+        drawScene(ctx, leftX, y0, panelW, panelH, dx, playRow);
+        drawScene(ctx, rightX, y0, panelW, panelH, function () { return 0; }, null);
+
+        // 全局侧也画「若整幅用中心时刻」——已是竖直
+        var tFrac = playRow / Math.max(panelH, 1);
+        playReadout.textContent =
+          "已读出约 " +
+          Math.min(100, Math.round((playRow / panelH) * 100)) +
+          "%　|　yaw=" +
+          yaw +
+          "°/帧　|　T_readout=" +
+          readout.toFixed(2) +
+          "　|　指针行 ≈ " +
+          playRow +
+          (Math.abs(yaw) < 1
+            ? "　·　角速度≈0 时左右几乎一样"
+            : "　·　左图上下已错位，右图始终竖直");
+      }
+
+      function tick() {
+        playRow = Math.min(playRow + BAND, 240);
+        var s = surface(playCanvas);
+        var panelH = Math.min(240, s.height - 70);
+        if (playRow >= panelH) {
+          playRow = panelH;
+          stopPlay();
+        }
+        renderPlay();
+      }
+
+      function stopPlay() {
+        playing = false;
+        playBtn.setAttribute("aria-pressed", "false");
+        playBtn.textContent = "播放";
+        if (playTimer) {
+          clearInterval(playTimer);
+          playTimer = null;
+        }
+      }
+
+      function startPlay() {
+        playing = true;
+        playBtn.setAttribute("aria-pressed", "true");
+        playBtn.textContent = "暂停";
+        if (playRow >= Math.min(240, (surface(playCanvas).height - 70))) {
+          playRow = 0;
+        }
+        playTimer = setInterval(tick, 40);
+      }
+
+      playBtn.addEventListener("click", function () {
+        if (playing) stopPlay();
+        else startPlay();
+      });
+      stepBtn.addEventListener("click", function () {
+        stopPlay();
+        var s = surface(playCanvas);
+        var panelH = Math.min(240, s.height - 70);
+        playRow = Math.min(playRow + BAND * 2, panelH);
+        renderPlay();
+      });
+      resetBtn.addEventListener("click", function () {
+        stopPlay();
+        playRow = 0;
+        yawPlay.value = 10;
+        readoutPlay.value = 60;
+        yawPlayOut.textContent = "10 °/帧";
+        readoutPlayOut.textContent = "0.60";
+        renderPlay();
+      });
+      yawPlay.addEventListener("input", function () {
+        yawPlayOut.textContent = yawPlay.value + " °/帧";
+        renderPlay();
+      });
+      readoutPlay.addEventListener("input", function () {
+        readoutPlayOut.textContent = ((+readoutPlay.value) / 100).toFixed(2);
+        renderPlay();
+      });
+      window.addEventListener("resize", renderPlay);
+      renderPlay();
+
+      // -------- 对照：GS vs RS --------
+      var cmpCanvas = document.getElementById("rs-compare");
+      var modeEl = document.getElementById("mode");
+      var yaw2 = document.getElementById("yaw2");
+      var yaw2Out = document.getElementById("yaw2-out");
+      var readout2 = document.getElementById("readout2");
+      var readout2Out = document.getElementById("readout2-out");
+      var cmpReset = document.getElementById("cmp-reset");
+      var cmpReadout = document.getElementById("cmp-readout");
+
+      function renderCmp() {
+        var s = surface(cmpCanvas);
+        var ctx = s.ctx;
+        var W = s.width;
+        var H = s.height;
+        var panelW = Math.min(300, (W - 60) / 2);
+        var panelH = Math.min(220, H - 60);
+        var y0 = 36;
+        var leftX = (W - 2 * panelW - 40) / 2;
+        var rightX = leftX + panelW + 40;
+        var amp = +yaw2.value;
+        var readout = (+readout2.value) / 100;
+        var mode = modeEl.value;
+
+        function dx(y, h) {
+          if (mode === "jelly") return dxJelly(y, h, amp * 1.1);
+          if (mode === "accel") return dxAccel(y, h, amp, Math.max(readout, 0.15));
+          return dxYaw(y, h, amp, readout);
+        }
+
+        ctx.fillStyle = INK;
+        ctx.font = "600 14px sans-serif";
+        ctx.fillText("全局快门", leftX, 24);
+        ctx.fillText("卷帘快门", rightX, 24);
+
+        drawScene(ctx, leftX, y0, panelW, panelH, function () { return 0; }, null);
+        drawScene(ctx, rightX, y0, panelW, panelH, dx, null);
+
+        var tip =
+          mode === "jelly"
+            ? "果冻：位移随行呈正弦，上下半幅剪切相反。"
+            : mode === "accel"
+              ? "角加速：位移含 t²，竖线变弯。"
+              : "匀速偏航：竖线变斜直线；T_readout 或强度越大越斜。";
+        cmpReadout.textContent =
+          "模式=" +
+          mode +
+          "　|　强度=" +
+          amp +
+          "　|　T_readout=" +
+          readout.toFixed(2) +
+          "　·　" +
+          tip;
+      }
+
+      modeEl.addEventListener("change", renderCmp);
+      yaw2.addEventListener("input", function () {
+        yaw2Out.textContent = yaw2.value;
+        renderCmp();
+      });
+      readout2.addEventListener("input", function () {
+        readout2Out.textContent = ((+readout2.value) / 100).toFixed(2);
+        renderCmp();
+      });
+      cmpReset.addEventListener("click", function () {
+        modeEl.value = "yaw";
+        yaw2.value = 10;
+        readout2.value = 55;
+        yaw2Out.textContent = "10";
+        readout2Out.textContent = "0.55";
+        renderCmp();
+      });
+      window.addEventListener("resize", renderCmp);
+      renderCmp();
+    })();
+  </script>
+</body>
+</html>

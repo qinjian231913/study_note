@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 18 篇 · 光流可视化、评估与常见坑</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        拼接与防抖 · 图像视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="17-farneback.html">第 17 篇</a>
+        <a href="18-flow-eval.html" aria-current="page">第 18 篇</a>
+        <a href="19-stabilize.html">第 19 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 18 篇 · 光流重点 · 约 50 分钟</p>
+    <h1>光流可视化、评估与常见坑</h1>
+    <p class="lede">前面几篇已经能算出稀疏箭头或整幅稠密场。这一篇专门回答三件事：结果怎么「看懂」、有真值时怎么「打分」、以及哪些场景经典光流特别容易翻车。最后用一页对照深度学习光流（RAFT 一类），并收束稀疏 / 稠密怎么选型。</p>
+    <div class="meta">
+      <span class="pill">先读：第 14–17 篇（概念与 Farneback）</span>
+      <span class="pill">下一篇：用跟踪点做二维防抖</span>
+      <span class="pill">重点篇</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#why">为什么要可视化与评估</a></li>
+        <li><a href="#arrow-wheel">箭头图 vs 色轮</a></li>
+        <li><a href="#epe">端点误差 EPE</a></li>
+        <li><a href="#fails">五种失败模式</a></li>
+        <li><a href="#raft">深度学习光流一瞥</a></li>
+        <li><a href="#choose">稀疏 vs 稠密怎么选</a></li>
+        <li><a href="#try">网页里拧方向与幅值</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改这里</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="why">为什么要可视化与评估</h2>
+    <p>光流算法吐出来的是一堆数字：每个点（或每个像素）一个 <code>(u, v)</code>——水平挪多少、竖直挪多少。人眼看不懂几千个浮点数，所以要<strong>可视化</strong>：把向量画成箭头，或染成颜色。</p>
+    <p>若手头有「正确答案」（真值光流，ground truth），还要<strong>评估</strong>：估计值和真值差多远。最常用的标尺叫<strong>端点误差 EPE</strong>（Endpoint Error）。没有真值时，至少用可视化找「明显离谱」的区域，再结合前后向一致性等启发式（第 16 篇提过）。</p>
+    <div class="callout note">
+      <p>生活类比：导航算出一条路线。箭头图像在地图上画几支路标；色轮像给整张路网涂色看堵不堵；EPE 像把估测里程和实测里程相减——有卷尺才谈得上「误差多少米」。</p>
+    </div>
+
+    <h2 id="arrow-wheel">箭头图 vs 色轮</h2>
+    <p>两种画法服务不同密度：</p>
+    <ul>
+      <li><strong>箭头图</strong>：每隔若干像素取一个点，从起点画到 <code>(x+u, y+v)</code>。方向、长短一目了然，适合<strong>稀疏光流</strong>（LK 跟踪点）或对稠密场做「抽样展示」。</li>
+      <li><strong>色轮图</strong>（Middlebury 风格）：每个像素都上色。<strong>色相</strong>表示运动方向，<strong>颜色有多「实」、离白有多远</strong>大致表示幅值；几乎不动的地方偏白。适合<strong>稠密光流</strong>整幅扫一眼。</li>
+    </ul>
+    <figure>
+      <img src="assets/figures/ch18_colorwheel.png" alt="Middlebury 风格色轮图例">
+      <figcaption>图 18-1　色轮图例。右（+u）偏红；下（+v）偏黄绿；左偏青；上偏紫。圆心白=几乎不动。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch18_arrow_vs_wheel.png" alt="同一运动场的箭头图与色轮图对照">
+      <figcaption>图 18-2　同一运动场。左：稀疏箭头（左半平移、右半旋转）。中：逐像素色轮。右：读色图例。箭头适合「指给你看」；色轮适合「一眼扫全图结构」。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>注意图像坐标：<strong>x 向右为正，y 向下为正</strong>。色轮标注里的「上」对应负的 <code>v</code>。读别人的色轮图时，先确认约定是否与 Middlebury 一致，避免把红当成「向上」。</p>
+    </div>
+    <p>脚本里用到的编码直觉（不必背代码）：</p>
+    <pre><code>角度 θ ≈ atan2(-v, -u)   # Middlebury 习惯，向右落在红色附近
+幅值 r = sqrt(u² + v²)
+颜色 = 按 θ 在色轮上插值，再按 r 从「白」拉向「实色」</code></pre>
+
+    <h2 id="epe">端点误差 EPE</h2>
+    <p>对某一个像素，真值是 <code>(u_gt, v_gt)</code>，算法给出 <code>(u_est, v_est)</code>。把两个向量都从同一起点画出，两个<strong>终点</strong>之间的欧氏距离就是该点的 EPE：</p>
+    <p class="formula">EPE = √[(u<sub>est</sub> − u<sub>gt</sub>)² + (v<sub>est</sub> − v<sub>gt</sub>)²]</p>
+    <p>白话：不是比「角度差」或「只比水平」，而是终点差了几个像素。整幅图常报<strong>平均 EPE</strong>（所有有效像素取平均）。遮挡区域往往没有可靠真值，评估时要先用 mask 抠掉。</p>
+    <figure>
+      <img src="assets/figures/ch18_epe.png" alt="EPE 几何示意与热力图">
+      <figcaption>图 18-3　左：青=真值终点，橙=估计终点，虚线长就是 EPE。右：EPE 热力图，越红错得越狠；右侧故意加了一块「坏区」。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>论文里还会看到 Fl-all、Fl-noc 等「错误像素比例」指标（误差超过阈值才算错）。入门先抓住 <strong>平均 EPE</strong> 就够：数字越小越好，单位是像素。</p>
+    </div>
+
+    <h2 id="fails">五种失败模式</h2>
+    <p>经典光流（亮度守恒 + 局部平滑 / 窗口）在下面几类场景会系统性变差。脚本用 Farneback 估流，再和已知真值比 EPE——数字会随随机纹理略有波动，但<strong>相对谁更惨</strong>的趋势稳定。</p>
+
+    <h3>1. 遮挡</h3>
+    <p>前景物体挪开后，原来被挡住的背景第一次露出来。这些像素在上一帧<strong>根本没有对应点</strong>，任何「找相似块」的方法都会瞎猜。遮挡边界附近 EPE 往往飙高。</p>
+    <figure>
+      <img src="assets/figures/ch18_fail_occlusion.png" alt="遮挡失败：两帧与 EPE">
+      <figcaption>图 18-4　蓝色块右移，左侧露出新背景。EPE 在揭开条带与边缘偏高。</figcaption>
+    </figure>
+
+    <h3>2. 光照突变</h3>
+    <p>亮度守恒假设：同一物理点灰度差不多不变。闪光灯、自动曝光猛跳、阴影扫过——假设碎了，算法会把「变亮」误当成「挪到别处」。</p>
+    <figure>
+      <img src="assets/figures/ch18_fail_lighting.png" alt="光照突变失败">
+      <figcaption>图 18-5　第二帧整体变亮。整幅 EPE 抬升，边缘尤其惨。</figcaption>
+    </figure>
+
+    <h3>3. 运动模糊</h3>
+    <p>快门时间内物体（或相机）在动，第二帧边缘被抹成拖影。梯度变弱，匹配特征变糊，误差集中在结构边缘。</p>
+    <figure>
+      <img src="assets/figures/ch18_fail_blur.png" alt="运动模糊失败">
+      <figcaption>图 18-6　第二帧水平模糊。细节不够，光流变「黏」。</figcaption>
+    </figure>
+
+    <h3>4. 重复纹理</h3>
+    <p>棋盘、百叶窗、瓷砖：很多窗口长得几乎一样（孔径问题的加强版）。算法可能匹配到<strong>错的那一格</strong>，位移差一个周期仍「看起来很像」。</p>
+    <figure>
+      <img src="assets/figures/ch18_fail_texture.png" alt="重复纹理失败">
+      <figcaption>图 18-7　规则棋盘 + 平移。边界与歧义区更容易花。</figcaption>
+    </figure>
+
+    <h3>5. 过大位移</h3>
+    <p>单层窗口只能「看见」附近。位移远超窗口 / 金字塔能覆盖的范围时，相关峰根本对不上，EPE 可以到几十像素。第 16 篇的金字塔、第 17 篇的多层 Farneback，就是为这个准备的；关掉层数就会翻车。</p>
+    <figure>
+      <img src="assets/figures/ch18_fail_large.png" alt="过大位移失败">
+      <figcaption>图 18-8　真值位移约 28 像素，却几乎不用金字塔。整幅平均 EPE 爆炸。</figcaption>
+    </figure>
+
+    <figure>
+      <img src="assets/figures/ch18_fail_grid.png" alt="五种失败模式总览">
+      <figcaption>图 18-9　五种坑总览。左列前后帧，右列 EPE。对照着看「哪一种错法」比死记公式有用。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>还有镜面高光、半透明、Rolling Shutter 果冻形变等。镜面破坏「同一点灰度稳定」；RS 让一帧内不同行处于不同时刻（第 21 篇）。本篇先把上面五类钉牢。</p>
+    </div>
+
+    <h2 id="raft">深度学习光流一瞥</h2>
+    <p>2015 年后，学习式光流（FlowNet 一族）再到 <strong>RAFT</strong>（Recurrent All-Pairs Field Transforms）一类方法，在公开榜单上往往显著低于经典 Farneback 的 EPE。直觉上它们在做什么：</p>
+    <ol>
+      <li>两帧先进神经网络，抽出特征图（比原始灰度更「抗一点」光照与模糊）。</li>
+      <li>算一个大相关体积：每个位置去跟另一帧很多候选位置比相似度——像查表「谁最像我」。</li>
+      <li><strong>反复迭代</strong>更新光流场：每一步看相关证据，改一点点 <code>(u,v)</code>，像优化器在跑，但权重是学来的。</li>
+    </ol>
+    <figure>
+      <img src="assets/figures/ch18_raft_glance.png" alt="RAFT 类流程示意">
+      <figcaption>图 18-10　RAFT 类流水线一瞥。解决了什么：大位移、弱纹理、跨场景泛化往往更好。仍要什么：GPU、权重、算力；极端遮挡与分布外数据照样会挂。评估方式不变——还是可视化 + EPE。</figcaption>
+    </figure>
+    <p>对本系列的实践含义：手机端实时防抖，多数仍先用<strong>稀疏金字塔 LK</strong>；要做运动分割、离线高质量对应，再考虑稠密经典法或学习式模型。不必本篇就上手训 RAFT，知道「色轮和 EPE 对深度模型同样适用」即可。</p>
+
+    <h2 id="choose">稀疏 vs 稠密怎么选</h2>
+    <figure>
+      <img src="assets/figures/ch18_sparse_vs_dense.png" alt="稀疏箭头与稠密色轮对照">
+      <figcaption>图 18-11　左：角点上的 LK 箭头——跟踪 / 估变换的原料。右：Farneback 稠密色轮——整幅谁在动一目了然。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch18_sparse_dense_table.png" alt="稀疏与稠密选型表">
+      <figcaption>图 18-12　选型速查。下一篇二维防抖：优先稀疏跟踪点 → 估相似/仿射 → 平滑路径。</figcaption>
+    </figure>
+    <p>收束三句：</p>
+    <ul>
+      <li>要<strong>稳视频</strong>、估全局变换 → 稀疏够用，又快又稳。</li>
+      <li>要<strong>分开前后景 / 稠密对应</strong> → 上稠密（经典或学习式）。</li>
+      <li>无论哪种：先<strong>可视化</strong>找离谱区域；有真值再报 <strong>EPE</strong>；失败时先怀疑遮挡、光照、模糊、重复纹、大位移。</li>
+    </ul>
+
+    <h2 id="try">网页里拧方向与幅值</h2>
+    <p>不必装 Python 也能建立手感。拖动 <code>u</code>、<code>v</code>：左侧箭头与色块同步变；右侧小色轮上的黑点标出当前方向。再拧「估计噪声」，看 EPE 读数怎么涨。</p>
+    <div class="playground">
+      <canvas id="flow-demo" class="demo" width="820" height="320" aria-label="光流箭头与色轮交互"></canvas>
+      <div class="controls">
+        <label for="flow-u">水平 u（右为正）</label>
+        <input id="flow-u" type="range" min="-20" max="20" step="0.5" value="8">
+        <output id="flow-u-out" for="flow-u">8.0 px</output>
+        <label for="flow-v">竖直 v（下为正）</label>
+        <input id="flow-v" type="range" min="-20" max="20" step="0.5" value="-4">
+        <output id="flow-v-out" for="flow-v">-4.0 px</output>
+        <label for="flow-noise">估计噪声 σ</label>
+        <input id="flow-noise" type="range" min="0" max="8" step="0.1" value="1.5">
+        <output id="flow-noise-out" for="flow-noise">1.5 px</output>
+      </div>
+      <div class="actions">
+        <button type="button" class="primary" id="flow-reset">恢复示例</button>
+        <button type="button" id="flow-zero">清零（静止）</button>
+      </div>
+      <p class="readout" id="flow-readout" aria-live="polite"></p>
+    </div>
+
+    <h2 id="run">运行脚本</h2>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <pre class="terminal"><code>source .venv/bin/activate   # 若尚未激活
+MPLCONFIGDIR=/tmp/mpl-cache python code/ch18_flow_eval.py</code></pre>
+      <p>会写出色轮、箭头对照、EPE 示意、五种失败对照、稀疏/稠密与 RAFT 一瞥，以及你的 <code>ch18_my_arrow_wheel.png</code>、<code>ch18_my_epe.png</code>。终端应出现「自检通过」。</p>
+    </div>
+
+    <h2 id="edit">改这里</h2>
+    <p>打开 <a href="code/ch18_flow_eval.py"><code>code/ch18_flow_eval.py</code></a> 顶部：</p>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>把 <code>MY_FLOW_U</code>、<code>MY_FLOW_V</code> 改成纯向上（例如 <code>u=0, v=-10</code>），看色轮是否偏紫、箭头是否朝上（屏幕上方）。</li>
+        <li>把 <code>MY_NOISE_STD</code> 从 1.5 提到 5.0，重跑后 <code>ch18_my_epe.png</code> 的平均 EPE 应明显变大（噪声越大，平均 EPE 越接近几个 σ 的量级）。</li>
+        <li>改成接近零运动（<code>u=0.2, v=-0.1</code>），色轮图应大面积偏白。</li>
+        <li>对照网页滑块与脚本参数设成同一组 <code>(u,v)</code>，确认方向直觉一致。</li>
+      </ol>
+    </div>
+    <figure>
+      <img src="assets/figures/ch18_my_arrow_wheel.png" alt="改这里生成的箭头与色轮">
+      <figcaption>图 18-13　默认「改这里」参数下的箭头 + 色轮（重跑脚本会按你的数更新）。</figcaption>
+    </figure>
+
+    <h2 id="check">自测</h2>
+    <details class="quiz">
+      <summary>1. 稀疏跟踪点更适合用箭头还是整幅色轮？为什么？</summary>
+      <p>更适合箭头。点本来就少，箭头能直接读方向和长短；色轮是为「每个像素都有向量」的稠密场准备的。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. EPE 量的是什么？单位是什么？</summary>
+      <p>估测光流终点与真值终点之间的欧氏距离，单位是像素。平均 EPE 是有效像素上的均值。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. 下列哪种情况最直接打破「亮度守恒」？遮挡 / 光照突变 / 重复纹理</summary>
+      <p>光照突变。遮挡是「没有对应点」；重复纹理是「对应点不唯一」；光照突变让同一点灰度假设失效。</p>
+    </details>
+    <details class="quiz">
+      <summary>4. 视频防抖估帧间相似变换，优先稀疏还是稠密？</summary>
+      <p>优先稀疏（LK 跟踪点等）。只要有足够多可靠点就能估变换；稠密更重，对「全局稳像」往往多余。</p>
+    </details>
+    <details class="quiz">
+      <summary>5. Middlebury 色轮中心为什么偏白？</summary>
+      <p>中心对应幅值≈0（几乎不动）。颜色深浅/离白远近编码运动大小，色相编码方向。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>光流重点线到此收束。下一篇进入防抖：用特征跟踪或光流估帧间变换 → 累积相机路径 → 平滑 → 补偿，并讨论「过平滑」带来的漂与裁切。</p>
+    <p><a href="19-stabilize.html">第 19 篇 · 二维视频防抖：轨迹平滑</a>（待写）</p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="17-farneback.html">上一篇</a>
+      <a href="index.html">目录</a>
+      <a href="19-stabilize.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+      var MUTED = "#5c564c";
+      var INK = "#1c1915";
+      var PAPER = "#fffdf8";
+
+      var canvas = document.getElementById("flow-demo");
+      if (!canvas || !canvas.getContext) return;
+      var ctx = canvas.getContext("2d");
+
+      var uEl = document.getElementById("flow-u");
+      var vEl = document.getElementById("flow-v");
+      var nEl = document.getElementById("flow-noise");
+      var uOut = document.getElementById("flow-u-out");
+      var vOut = document.getElementById("flow-v-out");
+      var nOut = document.getElementById("flow-noise-out");
+      var readout = document.getElementById("flow-readout");
+
+      // 简易 Middlebury 色轮表（与课文同思路）
+      var WHEEL = (function () {
+        var ry = 15, yg = 6, gc = 4, cb = 11, bm = 13, mr = 6;
+        var n = ry + yg + gc + cb + bm + mr;
+        var c = new Array(n);
+        var col = 0, i;
+        for (i = 0; i < ry; i++) c[col++] = [255, Math.floor(255 * i / ry), 0];
+        for (i = 0; i < yg; i++) c[col++] = [255 - Math.floor(255 * i / yg), 255, 0];
+        for (i = 0; i < gc; i++) c[col++] = [0, 255, Math.floor(255 * i / gc)];
+        for (i = 0; i < cb; i++) c[col++] = [0, 255 - Math.floor(255 * i / cb), 255];
+        for (i = 0; i < bm; i++) c[col++] = [Math.floor(255 * i / bm), 0, 255];
+        for (i = 0; i < mr; i++) c[col++] = [255, 0, 255 - Math.floor(255 * i / mr)];
+        return c;
+      })();
+
+      function flowColor(u, v, maxFlow) {
+        var mag = Math.sqrt(u * u + v * v);
+        var magN = Math.min(mag / maxFlow, 1);
+        var ang = Math.atan2(-v, -u) / Math.PI; // [-1,1]
+        ang = (ang + 1) / 2;
+        var fk = ang * (WHEEL.length - 1);
+        var k0 = Math.floor(fk);
+        var k1 = (k0 + 1) % WHEEL.length;
+        var f = fk - k0;
+        var c0 = WHEEL[k0], c1 = WHEEL[k1];
+        var r = (1 - f) * c0[0] + f * c1[0];
+        var g = (1 - f) * c0[1] + f * c1[1];
+        var b = (1 - f) * c0[2] + f * c1[2];
+        r = 255 - magN * (255 - r);
+        g = 255 - magN * (255 - g);
+        b = 255 - magN * (255 - b);
+        return "rgb(" + Math.round(r) + "," + Math.round(g) + "," + Math.round(b) + ")";
+      }
+
+      function drawArrow(x0, y0, x1, y1, color) {
+        var dx = x1 - x0, dy = y1 - y0;
+        var len = Math.sqrt(dx * dx + dy * dy) || 1;
+        var ux = dx / len, uy = dy / len;
+        ctx.strokeStyle = color;
+        ctx.fillStyle = color;
+        ctx.lineWidth = 2.2;
+        ctx.beginPath();
+        ctx.moveTo(x0, y0);
+        ctx.lineTo(x1, y1);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x1 - 10 * ux + 5 * uy, y1 - 10 * uy - 5 * ux);
+        ctx.lineTo(x1 - 10 * ux - 5 * uy, y1 - 10 * uy + 5 * ux);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      function expectedEpe(sigma) {
+        // 二维高斯噪声下 EPE 期望 ≈ σ * sqrt(π/2)
+        return sigma * Math.sqrt(Math.PI / 2);
+      }
+
+      function draw() {
+        var u = parseFloat(uEl.value);
+        var v = parseFloat(vEl.value);
+        var noise = parseFloat(nEl.value);
+        uOut.textContent = u.toFixed(1) + " px";
+        vOut.textContent = v.toFixed(1) + " px";
+        nOut.textContent = noise.toFixed(1) + " px";
+
+        var W = canvas.width, H = canvas.height;
+        ctx.clearRect(0, 0, W, H);
+        ctx.fillStyle = PAPER;
+        ctx.fillRect(0, 0, W, H);
+
+        // 左：色块 + 箭头
+        var leftW = 420;
+        var maxFlow = 20;
+        var col = flowColor(u, v, maxFlow);
+        ctx.fillStyle = col;
+        roundRect(24, 36, leftW - 48, H - 72, 12);
+        ctx.fill();
+        ctx.strokeStyle = "#e3d9c8";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
+        var cx = leftW / 2, cy = H / 2;
+        var scale = 4.5;
+        drawArrow(cx, cy, cx + u * scale, cy + v * scale, WAVE);
+        ctx.fillStyle = INK;
+        ctx.font = "14px sans-serif";
+        ctx.fillText("箭头 = 真值方向；底色 = 色轮编码", 36, 28);
+
+        // 右：小色轮 + 当前点
+        var ox = 520, oy = 40, R = 110;
+        for (var yy = -R; yy <= R; yy++) {
+          for (var xx = -R; xx <= R; xx++) {
+            if (xx * xx + yy * yy > R * R) continue;
+            var uu = (xx / R) * maxFlow;
+            var vv = (yy / R) * maxFlow;
+            ctx.fillStyle = flowColor(uu, vv, maxFlow);
+            ctx.fillRect(ox + R + xx, oy + R + yy, 1, 1);
+          }
+        }
+        ctx.strokeStyle = MUTED;
+        ctx.beginPath();
+        ctx.arc(ox + R, oy + R, R, 0, Math.PI * 2);
+        ctx.stroke();
+
+        var px = ox + R + (u / maxFlow) * R;
+        var py = oy + R + (v / maxFlow) * R;
+        ctx.fillStyle = INK;
+        ctx.beginPath();
+        ctx.arc(px, py, 5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = TEAL;
+        ctx.beginPath();
+        ctx.arc(ox + R, oy + R, 3, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = INK;
+        ctx.font = "13px sans-serif";
+        ctx.fillText("色轮上的黑点 = 当前 (u,v)", ox, oy + 2 * R + 28);
+        ctx.fillStyle = MUTED;
+        ctx.fillText("圆心 = 静止", ox, oy + 2 * R + 48);
+
+        var epe = expectedEpe(noise);
+        readout.textContent =
+          "真值 (u,v)=(" + u.toFixed(1) + ", " + v.toFixed(1) + ") px，幅值 " +
+          Math.sqrt(u * u + v * v).toFixed(2) + " px。" +
+          " 若估计噪声 σ=" + noise.toFixed(1) + "，平均 EPE 大约 " + epe.toFixed(2) +
+          " px（二维高斯的理论期望）。";
+      }
+
+      function roundRect(x, y, w, h, r) {
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.arcTo(x + w, y, x + w, y + h, r);
+        ctx.arcTo(x + w, y + h, x, y + h, r);
+        ctx.arcTo(x, y + h, x, y, r);
+        ctx.arcTo(x, y, x + w, y, r);
+        ctx.closePath();
+      }
+
+      function sync() { draw(); }
+
+      uEl.addEventListener("input", sync);
+      vEl.addEventListener("input", sync);
+      nEl.addEventListener("input", sync);
+      document.getElementById("flow-reset").addEventListener("click", function () {
+        uEl.value = 8; vEl.value = -4; nEl.value = 1.5; draw();
+      });
+      document.getElementById("flow-zero").addEventListener("click", function () {
+        uEl.value = 0; vEl.value = 0; draw();
+      });
+      draw();
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 26 篇 · 端到端实战三则</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        拼接与防抖 · 图像视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="25-video-stitch.html">第 25 篇</a>
+        <a href="26-projects.html" aria-current="page">第 26 篇</a>
+        <a href="index.html">目录</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 26 篇 · 收束实战 · 约 60 分钟</p>
+    <h1>端到端实战三则</h1>
+    <p class="lede">前面各篇是积木；这一篇把积木拼成三件能跑的小工程：多图全景、二维视觉防抖、合成 IMU 下的陀螺辅助 / Rolling Shutter 校正。每则都有参数表、预期效果和报错自检。读完你应能说清：整套笔记在「拼空间」和「稳时间」上各走到了哪里。</p>
+    <div class="meta">
+      <span class="pill">先读：第 0–2 篇必读；其余可当查阅</span>
+      <span class="pill">本篇为全套收束 · 无下一篇正文</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#why">为什么要做三则端到端</a></li>
+        <li><a href="#map">全套概念收束图</a></li>
+        <li><a href="#a">实战 A：多图全景</a></li>
+        <li><a href="#b">实战 B：二维视觉防抖</a></li>
+        <li><a href="#c">实战 C：陀螺辅助 / RS（合成 IMU）</a></li>
+        <li><a href="#try">网页里拧一拧</a></li>
+        <li><a href="#params">参数表与预期效果</a></li>
+        <li><a href="#errors">报错与自检清单</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改这里</a></li>
+        <li><a href="#check">自测</a></li>
+        <li><a href="#close">全套收束三句话</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="why">为什么要做三则端到端</h2>
+    <p>单独学「单应性」「光流」「角速度积分」，很容易会背名词却不会串起来。端到端的意思很朴素：</p>
+    <ul>
+      <li><strong>输入</strong>是你能摸到的东西（几张重叠图、一段晃动帧、一串合成 IMU）；</li>
+      <li><strong>中间</strong>按固定顺序调用前面学过的步骤；</li>
+      <li><strong>输出</strong>是一张更宽的图，或一段更稳的画面，并能对照「改参数前后差在哪」。</li>
+    </ul>
+    <p>本篇三则故意用<strong>合成数据</strong>。好处是：不依赖你手机里的真全景或真 IMU 日志，也能在本机复现；坏处是：真实镜头畸变、曝光跳变、时钟不同步会更脏——那正是第 11、22、25 篇讨论的「工程脏活」。先把干净流水线跑顺，再去换真数据。</p>
+    <div class="callout note">
+      <p>三则分别对应三条能力：<strong>A 拼空间</strong>（第 5–11 篇积木）、<strong>B 纯视觉稳时间</strong>（第 14–20 篇积木）、<strong>C 惯性辅助 + 行级时间差</strong>（第 21–23 篇积木）。可选的 Bundle Adjustment、3D 稳像、视频拼接在本篇只点名，不强制实现。</p>
+    </div>
+
+    <h2 id="map">全套概念收束图</h2>
+    <p>先看总图，再进细节。左边四条主线是「课」，右边三则是「作业」。</p>
+    <figure>
+      <img src="assets/figures/ch26_concept_map.png" alt="四条主线接到三则实战的概念收束图">
+      <figcaption>图 26-1　全套概念收束。几何与拼接喂给实战 A；光流与二维防抖喂给实战 B；RS / IMU / 陀螺 EIS 喂给实战 C。</figcaption>
+    </figure>
+    <p>生活类比：学做菜时，刀工、火候、调味是分课练的；这一篇相当于做三道完整的菜——你可以对照菜谱检查「哪一步用了哪节课」。</p>
+
+    <h2 id="a">实战 A：多图全景</h2>
+    <h3>现象</h3>
+    <p>站在原地，左右转着拍三张。每张视野有限，但相邻两张有重叠。目标：合成一张更宽的图，重叠区尽量不重影、接缝尽量不硬。</p>
+    <figure>
+      <img src="assets/images/ch26_panorama_inputs.png" alt="三张有重叠的合成取景">
+      <figcaption>图 26-2　脚本从宽街景裁出的三张「照片」。中间一张作锚，左右分别配准过来。</figcaption>
+    </figure>
+
+    <h3>概念：一条最短流水线</h3>
+    <p>零基础版只记五步（对应第 5–11 篇）：</p>
+    <ol>
+      <li><strong>检测特征</strong>（角点 / ORB）：找「好认」的点。</li>
+      <li><strong>匹配</strong>：在两张图里认同一点；用 Lowe 比率扔掉暧昧匹配。</li>
+      <li><strong>估单应 H</strong>：RANSAC 扛外点，得到 3×3 的「平面通行证」。</li>
+      <li><strong>投到画布</strong>：<code>warpPerspective</code> 把每张图变到同一坐标系。</li>
+      <li><strong>融合</strong>：硬叠会露接缝；羽化（或更高级的多频段 / 图割）把过渡做软。</li>
+    </ol>
+    <figure>
+      <img src="assets/figures/ch26_panorama_pipeline.png" alt="全景五步流水线示意">
+      <figcaption>图 26-3　实战 A 流水线。前半偏「认同一点」，后半偏「画在一起并藏缝」。</figcaption>
+    </figure>
+    <p>公式白话：若点在图 B 里是 <code>(x, y)</code>，想知道它在图 A 坐标系里落哪，就写</p>
+    <p class="formula">(x′, y′, w′)<sup>T</sup> = H · (x, y, 1)<sup>T</sup>，再除以 w′</p>
+    <p>人话：H 把「B 的像素地址」翻译成「A 的像素地址」。多图时，通常选一张锚图，把其它图都翻译到锚图坐标系（本脚本以中图为锚）。</p>
+
+    <h3>柱面投影（可选加分项）</h3>
+    <p>环拍很宽时，硬用一张「平面」画布会把两端拉歪。柱面思路：先把每张图「卷」到圆柱侧面再展开，再在柱面坐标里对齐。本篇给出单张柱面展开示意；完整柱面多图拼接是第 9 篇的主题。</p>
+    <figure>
+      <img src="assets/figures/ch26_panorama_cylindrical.png" alt="平面取景与柱面展开对照">
+      <figcaption>图 26-4　左：平面中图。右：同一张经柱面展开。两端被「掰」过，适合后续横向拼接。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p><strong>Bundle Adjustment（可选）</strong>：三图链式估 H 会累积误差。BA 的白话是「把所有相机位姿和匹配点一起微调，让整体更自洽」。第 12 篇展开；本脚本不强制跑 BA，以免依赖过重。</p>
+    </div>
+
+    <h3>预期效果</h3>
+    <figure>
+      <img src="assets/figures/ch26_panorama_result.png" alt="硬叠与羽化融合对照">
+      <figcaption>图 26-5　上：硬叠，接缝处易见跳变。下：羽化后过渡更软。标题里的「内点」来自 RANSAC——内点太少说明匹配不可信。</figcaption>
+    </figure>
+    <p>成功时你应看到：画布明显比单张宽；楼边大致连续；路面虚线不断成两截。失败时常见：整幅错位、局部重影、大片黑边。</p>
+
+    <h2 id="b">实战 B：二维视觉防抖</h2>
+    <h3>现象</h3>
+    <p>手持边走边拍：画面里既有你故意的平移运镜，又有高频手抖。目标：压掉手抖，尽量保留运镜，并裁掉补偿后露出的黑边。</p>
+
+    <h3>概念：稳的是「路径差」</h3>
+    <p>最小可行二维 EIS 四步（第 19–20 篇）：</p>
+    <ol>
+      <li>用特征点 + 金字塔 LK（第 15–16 篇）估<strong>帧间平移</strong>（本篇为简单起见用平移；工程上常用相似 / 仿射）。</li>
+      <li><strong>累积</strong>成一条「相机路径」：第 0 帧为原点，后面帧是位移求和。</li>
+      <li>对路径做<strong>滑动平均</strong>（或更聪明的路径优化）：得到「理想运镜」。</li>
+      <li>每帧补偿量 ≈ 平滑路径 − 原路径，再 <code>warpAffine</code>，最后按裁切比裁掉黑边。</li>
+    </ol>
+    <p class="formula">补偿位移 ≈ smooth(path) − path</p>
+    <p>人话：路径比理想线高了 5 像素，就把画面往回挪 5 像素。平滑窗口越大，越「稳」，也越容易把故意运镜抹平，看起来像在「漂」。</p>
+    <figure>
+      <img src="assets/figures/ch26_stabilize_path.png" alt="晃动路径、故意运镜与平滑路径">
+      <figcaption>图 26-6　橙色偏抖的是裁切中心；青色是故意运镜；黑色是平滑结果。防抖就是把橙色往黑色附近拉。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/images/ch26_stabilize_compare.png" alt="防抖前后五帧对照">
+      <figcaption>图 26-7　上排：原始晃动帧。下排：补偿并裁切后。竖杆与楼边的「跳动」应明显减弱。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch26_stabilize_metric.png" alt="防抖前后帧间跳变柱状图">
+      <figcaption>图 26-8　用「相邻帧中心块平均绝对差」粗测跳变能量。数值下降 = 更稳（这不是电影工业标准，但是好用的自检）。</figcaption>
+    </figure>
+
+    <h2 id="c">实战 C：陀螺辅助 / RS（合成 IMU）</h2>
+    <h3>现象</h3>
+    <p>手机大多是<strong>卷帘快门</strong>（Rolling Shutter）：一行一行曝光，不是整幅同一时刻。手持快速转动时，竖杆会变成斜杆，整幅像果冻——这是第 21 篇的核心现象。</p>
+    <p>纯视觉在模糊、低纹理、猛甩时容易跟丢。陀螺仪直接测角速度，短时间很准（长时间会漂）——第 22–23 篇。</p>
+
+    <h3>概念：合成 IMU 也能练手</h3>
+    <p>没有真机日志时，脚本会<strong>合成</strong>一段三轴角速度，并人为制造 RS 斜切，再演示「已知角速度 → 按行反向挪」的校正。</p>
+    <p>最小模型（只演示绕竖直轴 yaw）：</p>
+    <p class="formula">第 y 行曝光时刻 ≈ (y / H) · T<sub>readout</sub></p>
+    <p class="formula">该行水平错位 ≈ f · tan(ω · t<sub>row</sub>) ≈ f · ω · t<sub>row</sub>（小角度）</p>
+    <p>人话：越靠下的行，曝光越晚，相机又多转了一点，竖线就被拧斜。校正 = 用陀螺告诉你的 ω，把每一行<strong>拧回去</strong>。</p>
+    <figure>
+      <img src="assets/figures/ch26_gyro_rs_demo.png" alt="全局快门、RS 斜切、校正后三对照">
+      <figcaption>图 26-9　左：全局快门真值。中：按合成角速度加了 RS。右：用同一 ω 反向校正。杆应基本回直。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch26_gyro_curves.png" alt="合成 IMU 角速度与积分姿态">
+      <figcaption>图 26-10　上：合成角速度。下：积分姿态、平滑目标姿态、二者之差（补偿角）。陀螺 EIS 的「稳」同样来自路径差，只是路径来自积分而不是光流。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>真机还要处理：陀螺到相机的外参、时间戳对齐、读出方向（从上到下还是反向）、与视觉融合抑漂移。本篇只保证「合成数据上公式方向正确」，把坑留在清单里提醒你。</p>
+    </div>
+
+    <h2 id="try">网页里拧一拧</h2>
+    <p>不装 Python 也能感受两件关键旋钮：全景羽化带宽、防抖平滑窗口。陀螺强度请用脚本顶部参数试。</p>
+
+    <div class="playground">
+      <canvas id="blend-demo" class="demo" width="820" height="260" aria-label="羽化带宽示意"></canvas>
+      <div class="controls">
+        <label for="blend">羽化带宽 blend</label>
+        <input id="blend" type="range" min="0" max="80" step="2" value="40">
+        <output id="blend-out" for="blend">40 px</output>
+      </div>
+      <p class="readout" id="blend-readout" aria-live="polite"></p>
+    </div>
+
+    <div class="playground">
+      <canvas id="smooth-demo" class="demo" width="820" height="280" aria-label="路径平滑窗口示意"></canvas>
+      <div class="controls">
+        <label for="win">平滑窗口 win</label>
+        <input id="win" type="range" min="3" max="31" step="2" value="15">
+        <output id="win-out" for="win">15</output>
+      </div>
+      <div class="actions">
+        <button type="button" class="primary" id="smooth-play" aria-pressed="false">播放</button>
+        <button type="button" id="smooth-reset">恢复</button>
+      </div>
+      <p class="readout" id="smooth-readout" aria-live="polite"></p>
+    </div>
+
+    <h2 id="params">参数表与预期效果</h2>
+    <div class="table-scroll">
+      <table>
+        <caption>表 26-1　脚本顶部「改这里」与预期观感</caption>
+        <thead>
+          <tr><th>参数</th><th>默认</th><th>变大时</th><th>变小时</th><th>主要影响的图</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>PANORAMA_BLEND_WIDTH</code></td>
+            <td>40</td>
+            <td>接缝更软，重叠区可能发糊</td>
+            <td>接缝更硬，易见拼接线</td>
+            <td><code>ch26_my_panorama.png</code></td>
+          </tr>
+          <tr>
+            <td><code>STABILIZE_SMOOTH_WIN</code></td>
+            <td>15</td>
+            <td>更稳，运镜易「漂」</td>
+            <td>更跟手，残余抖动更多</td>
+            <td><code>ch26_my_stabilize.png</code></td>
+          </tr>
+          <tr>
+            <td><code>GYRO_RS_STRENGTH</code></td>
+            <td>1.0</td>
+            <td>斜切更夸张，校正量同比放大</td>
+            <td>斜切变弱，接近全局快门</td>
+            <td><code>ch26_my_gyro.png</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <caption>表 26-2　三则实战：输入 → 关键步骤 → 成功长什么样</caption>
+        <thead>
+          <tr><th>实战</th><th>输入</th><th>关键步骤</th><th>成功时你应看到</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>A 全景</td>
+            <td>≥3 张有重叠图</td>
+            <td>ORB→H→warp→羽化</td>
+            <td>更宽画布；RANSAC 内点充足；羽化后缝不明显</td>
+          </tr>
+          <tr>
+            <td>B 二维防抖</td>
+            <td>晃动帧序列</td>
+            <td>LK 跟踪→累积→平滑→补偿裁切</td>
+            <td>路径毛刺下降；帧间跳变指标下降；黑边被裁掉</td>
+          </tr>
+          <tr>
+            <td>C 陀螺 / RS</td>
+            <td>合成 IMU + RS 图</td>
+            <td>ω→行位移 / 姿态差补偿</td>
+            <td>竖杆斜率接近 0；校正图更像全局快门真值</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="errors">报错与自检清单</h2>
+    <p>先对现象，再改参数。下图与表格一致，可当墙纸式速查。</p>
+    <figure>
+      <img src="assets/figures/ch26_error_checklist.png" alt="报错与自检清单图">
+      <figcaption>图 26-11　报错自检清单。全景看匹配与羽化；防抖看窗口与裁切；陀螺看符号、延迟与读出时间。</figcaption>
+    </figure>
+    <div class="table-scroll">
+      <table>
+        <caption>表 26-3　自检清单（跑脚本前后勾选）</caption>
+        <thead>
+          <tr><th>#</th><th>检查项</th><th>通过标准</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>1</td><td>虚拟环境与依赖</td><td>能 <code>import cv2, numpy, matplotlib</code></td></tr>
+          <tr><td>2</td><td>脚本退出码</td><td>终端打印「自检通过」且无 traceback</td></tr>
+          <tr><td>3</td><td>全景内点</td><td>左右 RANSAC 内点均 ≥ 8（脚本硬门槛）</td></tr>
+          <tr><td>4</td><td>防抖指标</td><td><code>ch26_stabilize_metric.png</code> 中「后」柱低于「前」</td></tr>
+          <tr><td>5</td><td>RS 斜率</td><td>校正后斜率接近 GS；终端打印的三数合理</td></tr>
+          <tr><td>6</td><td>「改这里」隔离</td><td>只动顶部三参数时，仅 <code>ch26_my_*.png</code> 应明显变</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="run">运行脚本</h2>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <p>在本系列根目录（能看见 <code>index.html</code>）执行：</p>
+      <pre class="terminal"><code>source .venv/bin/activate          # Windows: .venv\Scripts\activate
+MPLCONFIGDIR=/tmp/mpl-cache python code/ch26_projects.py</code></pre>
+      <p>成功时会写出课文对照图与三张「我的」图，并打印「自检通过……」。主要文件：</p>
+      <ul>
+        <li><code>assets/figures/ch26_concept_map.png</code>、<code>ch26_error_checklist.png</code></li>
+        <li><code>ch26_panorama_*.png</code>、<code>ch26_stabilize_*.png</code>、<code>ch26_gyro_*.png</code></li>
+        <li><code>assets/images/ch26_panorama_inputs.png</code>、<code>ch26_stabilize_compare.png</code></li>
+        <li><code>ch26_my_panorama.png</code>、<code>ch26_my_stabilize.png</code>、<code>ch26_my_gyro.png</code></li>
+      </ul>
+    </div>
+
+    <h2 id="edit">改这里</h2>
+    <p>打开 <a href="code/ch26_projects.py"><code>code/ch26_projects.py</code></a> 顶部「改这里」。课文对照图仍按固定参数重画；只有 <code>ch26_my_*.png</code> 跟你的旋钮走。</p>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>把 <code>PANORAMA_BLEND_WIDTH</code> 改成 <code>4</code>，再改成 <code>80</code>，对比 <code>ch26_my_panorama.png</code> 接缝软硬。</li>
+        <li>把 <code>STABILIZE_SMOOTH_WIN</code> 改成 <code>5</code>，再改成 <code>31</code>，看平滑曲线是贴着抖，还是几乎拉成直线。</li>
+        <li>把 <code>GYRO_RS_STRENGTH</code> 改成 <code>0.3</code> 与 <code>2.0</code>，观察斜切强度与校正后竖杆。</li>
+        <li>（选做）把实战 B 的裁切 <code>crop_margin</code> 在函数调用处改大，黑边更少但视野更窄——体会第 20 篇的裁切比权衡。</li>
+      </ol>
+    </div>
+
+    <h2 id="check">自测</h2>
+    <p>先自己答，再展开。建议四题都过一遍再关页。</p>
+    <details class="quiz">
+      <summary>1. 实战 A 里「以中图为锚」是什么意思？左右图的 H 分别描述什么？</summary>
+      <p>锚图定义画布坐标系。左图的 H 把左图像素映射到中图坐标系；右图的 H 把右图像素映射到中图坐标系。然后三者叠在同一张画布上再融合。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. 二维防抖的补偿量为什么是「平滑路径 − 原路径」，而不是直接用平滑路径去裁切？</summary>
+      <p>每帧图像已经处在「原路径」对应的取景上。要把它挪到「平滑路径」附近，需要的是二者之差。只拿平滑路径当绝对坐标，没有和当前帧对齐，补偿方向会对不上。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. Rolling Shutter 下竖杆变斜，和「整幅一起平移」的全局快门抖动有何不同？陀螺校正为什么要按行？</summary>
+      <p>全局快门整幅同一时刻，抖动主要表现为整幅位移/旋转；RS 是不同行不同时刻，同一竖线在行间被陆续扭歪，呈现斜切/果冻。因此校正量随行号（曝光时刻）变化，必须按行（或按扫描块）施加不同 warp。</p>
+    </details>
+    <details class="quiz">
+      <summary>4. 平滑窗口过大时，防抖视频常出现什么观感？这和第 20 篇「保留运镜」有什么关系？</summary>
+      <p>会出现「漂」：故意的平移/跟拍被抹平，画面像在缓慢游荡。路径优化的目标正是压高频抖动、保留低频运镜；窗口过大等于把低频也砍了。</p>
+    </details>
+    <details class="quiz">
+      <summary>5.（加分）纯视觉 EIS 与陀螺 EIS 各擅长什么场景？</summary>
+      <p>纯视觉：能直接对齐像素，对场景结构敏感，可辅助抑漂移；在低纹理、运动模糊、猛甩时易跟丢。陀螺：短时旋转测得稳，不依赖纹理，擅长 RS 行级校正与快速转动；但有积分漂移，且需要外参与时间对齐。工程上常联合使用。</p>
+    </details>
+
+    <h2 id="close">全套收束三句话</h2>
+    <ol>
+      <li><strong>拼接</strong>解决「视野不够」：用特征与几何把多图变到同一坐标系，再用融合藏缝。</li>
+      <li><strong>防抖</strong>解决「时间上晃」：估计路径，减掉相对平滑目标的差，并接受裁切代价。</li>
+      <li><strong>陀螺与 RS</strong>补上「视觉看不清」和「一行一个时刻」：角速度积分给姿态，按行补偿才能掰直果冻。</li>
+    </ol>
+    <p>若你从第 0 篇一路走到这里：坐标与变换是语法，特征与光流是动词，单应与路径是句子，全景与稳像是完整段落。回去翻目录时，把每一篇当作查字典，而不是从头再读一遍。</p>
+
+    <h2>没有下一篇</h2>
+    <p>本篇是目录上的收束篇。若要复习，建议按需求跳读：拼全景回第 8–11 篇；光流回第 14–18 篇；稳像与陀螺回第 19–23 篇。</p>
+    <p><a href="index.html">返回系列目录</a></p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="25-video-stitch.html">上一篇</a>
+      <a href="index.html">目录</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var INK = "#1c1915";
+      var MUTED = "#5c564c";
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+      var playing = false;
+      var frame = 0;
+      var lastTime = null;
+      var nFrames = 64;
+
+      function surface(canvas) {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var width = canvas.clientWidth || 640;
+        var height = canvas.clientHeight || 260;
+        var pw = Math.round(width * dpr);
+        var ph = Math.round(height * dpr);
+        if (canvas.width !== pw || canvas.height !== ph) {
+          canvas.width = pw;
+          canvas.height = ph;
+        }
+        var ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(0, 0, width, height);
+        return { ctx: ctx, width: width, height: height };
+      }
+
+      function drawBlend() {
+        var canvas = document.getElementById("blend-demo");
+        var box = surface(canvas);
+        var ctx = box.ctx;
+        var w = box.width;
+        var h = box.height;
+        var blend = Number(document.getElementById("blend").value);
+        var left = 40;
+        var top = 36;
+        var vw = Math.min(280, w * 0.38);
+        var vh = h - 72;
+        var overlap = 90;
+
+        // 左图块
+        ctx.fillStyle = "#fde8df";
+        ctx.fillRect(left, top, vw, vh);
+        ctx.strokeStyle = WAVE;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(left, top, vw, vh);
+        ctx.fillStyle = WAVE;
+        ctx.font = "14px Microsoft YaHei, sans-serif";
+        ctx.fillText("图 L", left + 10, top + 22);
+
+        // 右图块
+        var rx = left + vw - overlap;
+        ctx.fillStyle = "#e5f3f1";
+        ctx.globalAlpha = 0.85;
+        ctx.fillRect(rx, top, vw, vh);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = TEAL;
+        ctx.strokeRect(rx, top, vw, vh);
+        ctx.fillStyle = TEAL;
+        ctx.fillText("图 R", rx + vw - 48, top + 22);
+
+        // 羽化条：在重叠区画渐变
+        var seam0 = rx;
+        var seam1 = left + vw;
+        var bw = Math.min(blend, seam1 - seam0);
+        if (bw > 0) {
+          var grad = ctx.createLinearGradient(seam1 - bw, 0, seam1, 0);
+          grad.addColorStop(0, "rgba(194,77,40,0.55)");
+          grad.addColorStop(1, "rgba(14,107,102,0.55)");
+          ctx.fillStyle = grad;
+          ctx.fillRect(seam1 - bw, top + 8, bw, vh - 16);
+        } else {
+          ctx.strokeStyle = INK;
+          ctx.setLineDash([4, 4]);
+          ctx.beginPath();
+          ctx.moveTo(seam1, top);
+          ctx.lineTo(seam1, top + vh);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+
+        document.getElementById("blend-out").textContent = blend + " px";
+        document.getElementById("blend-readout").textContent =
+          blend === 0
+            ? "带宽 0：硬切。接缝处颜色突变，人眼很容易抓到拼接线。"
+            : "带宽 " + blend + " px：重叠区按权重混合。越大越软，过大两边纹理会一起发糊。";
+      }
+
+      function movingAvg(arr, win) {
+        var out = arr.slice();
+        var half = Math.floor(win / 2);
+        var i, j, s, c;
+        for (i = 0; i < arr.length; i++) {
+          s = 0;
+          c = 0;
+          for (j = i - half; j <= i + half; j++) {
+            if (j >= 0 && j < arr.length) {
+              s += arr[j];
+              c += 1;
+            }
+          }
+          out[i] = s / c;
+        }
+        return out;
+      }
+
+      function pathData(win) {
+        var raw = [];
+        var ideal = [];
+        var i, t;
+        for (i = 0; i < nFrames; i++) {
+          t = i / (nFrames - 1);
+          var ix = 70 + 240 * t;
+          var iy = 130 + 16 * Math.sin(Math.PI * t);
+          var jx = 16 * Math.sin(2 * Math.PI * 7 * t);
+          var jy = 18 * Math.sin(2 * Math.PI * 5 * t + 0.4);
+          ideal.push({ x: ix, y: iy });
+          raw.push({ x: ix + jx, y: iy + jy });
+        }
+        var sx = movingAvg(raw.map(function (p) { return p.x; }), win);
+        var sy = movingAvg(raw.map(function (p) { return p.y; }), win);
+        var smooth = sx.map(function (x, idx) { return { x: x, y: sy[idx] }; });
+        return { raw: raw, ideal: ideal, smooth: smooth };
+      }
+
+      function drawSmooth() {
+        var canvas = document.getElementById("smooth-demo");
+        var box = surface(canvas);
+        var ctx = box.ctx;
+        var w = box.width;
+        var h = box.height;
+        var win = Number(document.getElementById("win").value);
+        var data = pathData(win);
+
+        function strokePath(pts, color, width) {
+          ctx.beginPath();
+          pts.forEach(function (p, i) {
+            if (i === 0) ctx.moveTo(p.x, p.y);
+            else ctx.lineTo(p.x, p.y);
+          });
+          ctx.strokeStyle = color;
+          ctx.lineWidth = width;
+          ctx.stroke();
+        }
+
+        strokePath(data.raw, WAVE, 1.6);
+        strokePath(data.ideal, TEAL, 2.0);
+        strokePath(data.smooth, INK, 2.2);
+
+        var f = Math.min(frame, nFrames - 1);
+        ctx.fillStyle = WAVE;
+        ctx.beginPath();
+        ctx.arc(data.raw[f].x, data.raw[f].y, 5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = INK;
+        ctx.beginPath();
+        ctx.arc(data.smooth[f].x, data.smooth[f].y, 5, 0, Math.PI * 2);
+        ctx.fill();
+
+        var dx = data.smooth[f].x - data.raw[f].x;
+        var dy = data.smooth[f].y - data.raw[f].y;
+        ctx.strokeStyle = MUTED;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.moveTo(data.raw[f].x, data.raw[f].y);
+        ctx.lineTo(data.smooth[f].x, data.smooth[f].y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        ctx.fillStyle = INK;
+        ctx.font = "13px Microsoft YaHei, sans-serif";
+        ctx.fillText("橙=晃动  青=运镜  黑=平滑", 16, 22);
+
+        document.getElementById("win-out").textContent = String(win);
+        document.getElementById("smooth-readout").textContent =
+          "当前帧补偿 ≈ (" + dx.toFixed(1) + ", " + dy.toFixed(1) + ") px。" +
+          (win >= 25
+            ? " 窗口很大：曲线很直，运镜也可能被抹平（漂）。"
+            : win <= 5
+              ? " 窗口很小：更贴着手抖，残余高频更多。"
+              : " 中等窗口：常见折中——压抖、还留一点运镜。");
+      }
+
+      function tick(ts) {
+        if (!playing) {
+          lastTime = null;
+          return;
+        }
+        if (lastTime == null) lastTime = ts;
+        if (ts - lastTime > 60) {
+          frame = (frame + 1) % nFrames;
+          lastTime = ts;
+          drawSmooth();
+        }
+        requestAnimationFrame(tick);
+      }
+
+      document.getElementById("blend").addEventListener("input", drawBlend);
+      document.getElementById("win").addEventListener("input", function () {
+        drawSmooth();
+      });
+      document.getElementById("smooth-play").addEventListener("click", function () {
+        playing = !playing;
+        this.setAttribute("aria-pressed", playing ? "true" : "false");
+        this.textContent = playing ? "暂停" : "播放";
+        if (playing) requestAnimationFrame(tick);
+      });
+      document.getElementById("smooth-reset").addEventListener("click", function () {
+        playing = false;
+        frame = 0;
+        document.getElementById("smooth-play").setAttribute("aria-pressed", "false");
+        document.getElementById("smooth-play").textContent = "播放";
+        document.getElementById("win").value = "15";
+        drawSmooth();
+      });
+
+      drawBlend();
+      drawSmooth();
+      window.addEventListener("resize", function () {
+        drawBlend();
+        drawSmooth();
+      });
+    })();
+  </script>
+</body>
+</html>

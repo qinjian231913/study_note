@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 12 篇 · Bundle Adjustment：多图一起纠偏</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        拼接与防抖 · 图像视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="11-exposure.html">第 11 篇</a>
+        <a href="12-ba.html" aria-current="page">第 12 篇</a>
+        <a href="13-deep-features.html">第 13 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 12 篇 · 全局纠偏 · 约 55 分钟</p>
+    <h1>Bundle Adjustment：多图一起纠偏</h1>
+    <p class="lede">前面几篇你会「两张图估一个 H」。多张图首尾相接时，小误差会像电话传话一样越积越大。这一篇用白话讲 Bundle Adjustment（捆绑调整，简称 BA）：同时微调各相机位姿和空间点，让整体重投影误差变小。不要求你手写大型稀疏求解器——我们用小规模数值把直觉钉牢。</p>
+    <div class="meta">
+      <span class="pill">先读：第 3、7、8 篇（单应、RANSAC、拼接流水线）更顺</span>
+      <span class="pill">本篇重点：误差累积 + BA 在全景中的位置</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#drift">一对一对估：误差怎么越积越大</a></li>
+        <li><a href="#ba-words">BA 白话：一捆参数一起拧</a></li>
+        <li><a href="#reproj">重投影误差到底是什么</a></li>
+        <li><a href="#where">它在全景流水线里站哪</a></li>
+        <li><a href="#mini">小规模数值示意（不是工业求解器）</a></li>
+        <li><a href="#try">交互：拖噪声、看链式 vs BA</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改这里</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="drift">一对一对估：误差怎么越积越大</h2>
+    <p>全景拍摄时，你通常会拍一串有重叠的照片：图 0、图 1、图 2……图 N。最直观的做法是：</p>
+    <ol>
+      <li>用重叠区的特征点，估 <code>H<sub>01</sub></code>（把图 1 变到图 0）；</li>
+      <li>再估 <code>H<sub>12</sub></code>（图 2 → 图 1）；</li>
+      <li>要得到「图 2 相对图 0」，就做矩阵连乘：<code>H<sub>02</sub> ≈ H<sub>01</sub> · H<sub>12</sub></code>；</li>
+      <li>一路乘下去，把所有图都拽到图 0 的坐标系。</li>
+    </ol>
+    <p>麻烦在于：每一对估出的 H 都带着一点点噪声（匹配点不准、RANSAC 没剔干净、场景不完全共面……）。这些小误差<strong>同向叠加</strong>时，末端会漂得很远——就像一队人报数，每人偏 1°，到第十人可能已经偏了将近 10°。</p>
+    <figure>
+      <img src="assets/figures/ch12_pair_chain.png" alt="四格示意：朝向角链式累加，末端越偏越大">
+      <figcaption>图 12-1　青色是真值朝向，橙色是「只信相邻相对角、从 0 往前加」的结果。站数越多，末端夹角越大。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch12_accumulate_curve.png" alt="朝向误差随图像序号上升的曲线">
+      <figcaption>图 12-2　多次随机噪声下的平均误差：大致随「累加站数」往上爬。这就是为什么「局部两张看着齐、整圈却对不齐」。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>360° 全景更残酷：你希望首尾也能接上。若只做链式累加，绕一圈后首尾往往对不上——画面会出现「裂缝」或「重叠错位」。后面会看到：闭环观测正好给 BA 一根「把整条链掰直」的杠杆。</p>
+    </div>
+
+    <h2 id="ba-words">BA 白话：一捆参数一起拧</h2>
+    <p><strong>Bundle</strong> 可以想成「一捆」：一捆相机位姿、一捆三维点（或柱面/球面上的方位）。<strong>Adjustment</strong> 就是微调。合起来：</p>
+    <p class="formula">同时轻轻拧动「各相机怎么摆」和「各点在世界里在哪」，让所有观测的预测位置尽量贴近图像上真正看到的位置。</p>
+    <p>对比一下两种策略：</p>
+    <ul>
+      <li><strong>成对 + 链式</strong>：每次只看两张图，估完就冻住，再往下传。前面冻错了，后面只能硬吃。</li>
+      <li><strong>BA</strong>：把多张图的约束<strong>放进同一个优化问题</strong>。图 0–1、1–2、2–3……甚至 5–0 的闭环，一起说话。某一对偏了，其它对可以把参数往回拽。</li>
+    </ul>
+    <figure>
+      <img src="assets/figures/ch12_loop.png" alt="闭环约束把漂移路径掰直的示意">
+      <figcaption>图 12-3　闭环：首尾之间也有重叠观测时，BA 会用这条「回头约束」把中间各站一起校正。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch12_ba_before_after.png" alt="BA 前后朝向角对比">
+      <figcaption>图 12-4　左：纯链式。右：同一批相对角观测 + 闭环，做完小规模 BA。灰色虚线是真值方向。</figcaption>
+    </figure>
+    <p>本篇全景示意里，我们把每张图简化成一个<strong>朝向角</strong>（像相机绕竖直轴转了多少度）。真实系统里位姿是 6 自由度（旋转+平移），点是三维的；数学更胖，但「一起拧、让残差变小」这件事是一样的。</p>
+
+    <h2 id="reproj">重投影误差到底是什么</h2>
+    <p>先记住三个角色：</p>
+    <ul>
+      <li><strong>相机位姿</strong>：这台相机在世界里站哪、朝哪看；</li>
+      <li><strong>三维点</strong>（或柱面上的点）：场景里某个角点的空间位置；</li>
+      <li><strong>观测</strong>：这个点在某张图像上实际落在哪个像素 <code>u</code>。</li>
+    </ul>
+    <p>给定当前的「位姿猜测」和「点位置猜测」，你可以正着算一遍：这个点应该投到图像的哪里——叫<strong>预测投影</strong> <code>û</code>。它和观测 <code>u</code> 的差距就是<strong>重投影误差</strong>：</p>
+    <p class="formula">残差 e = û − u　（向量；常看 ‖e‖ 或 ‖e‖²）</p>
+    <p>BA 的目标函数（白话版）就是：把所有「相机–点」观测的残差平方加起来，找一组参数让这个总和尽量小。</p>
+    <figure>
+      <img src="assets/figures/ch12_reproj.png" alt="重投影误差：预测点与观测点之间的残差箭头">
+      <figcaption>图 12-5　预测落点 û（青）和观测 u（橙）对不上时，中间那段就是残差。BA 同时拧位姿与点，让这些箭头整体变短。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>为什么「点和位姿都要动」？只动位姿、把点冻死，有时也能改善；但点的初值同样不准（三角化有噪声）。两边一起微调，通常比只拧一边更贴观测。这就是「捆绑」二字的含义。</p>
+    </div>
+    <figure>
+      <img src="assets/figures/ch12_cost_curve.png" alt="BA 迭代代价下降曲线">
+      <figcaption>图 12-6　高斯–牛顿几步之后，代价 ½∑残差² 往下走。工业实现会用稀疏 Schur 补、鲁棒核函数等；本篇只保留「迭代降代价」的骨架。</figcaption>
+    </figure>
+
+    <h2 id="where">它在全景流水线里站哪</h2>
+    <p>回顾图片拼接的大流程（第 8 篇会展开）：找特征 → 匹配 → 估相对几何 → <strong>（可选）全局优化</strong> → 投影到画布 → 曝光/融合。BA 就坐在「相对几何」和「统一投影」之间。</p>
+    <figure>
+      <img src="assets/figures/ch12_pipeline.png" alt="流水线：匹配→成对H→BA→投影→融合">
+      <figcaption>图 12-7　BA 不是必须步骤，但对多图、尤其是长链条或 360° 闭环，往往是「从能拼」到「拼得顺」的关键一站。</figcaption>
+    </figure>
+    <p>可以这样记使用时机：</p>
+    <ul>
+      <li><strong>两张图、近似平面</strong>：一个 H + RANSAC 往往够用，不必上 BA。</li>
+      <li><strong>五张以上、长条全景</strong>：链式误差开始显眼，值得做位姿图优化或 BA。</li>
+      <li><strong>360° 要首尾相接</strong>：强烈建议全局优化；闭环边是宝。</li>
+      <li><strong>近景大视差</strong>：单个 H 本身模型就不对，BA 也救不了错误模型——需要更好的几何假设（多平面、网格变形等）。</li>
+    </ul>
+
+    <h2 id="mini">小规模数值示意（不是工业求解器）</h2>
+    <p>本篇脚本做了两套玩具，都只用 <code>numpy</code> 的高斯–牛顿，<strong>故意很小</strong>：</p>
+    <ol>
+      <li><strong>一维朝向 BA</strong>（全景常用简化）：变量是各图的 yaw 角；观测是相对角 <code>θ<sub>j</sub>−θ<sub>i</sub></code>。固定图 0 的角度为 0，避免「整圈一起转」的自由度漂掉。</li>
+      <li><strong>二维迷你 BA</strong>：3 个相机（只平移）+ 4 个平面点；观测是「点相对相机中心的二维位移」。同时微调相机 1、2 和所有点。</li>
+    </ol>
+    <figure>
+      <img src="assets/figures/ch12_points_ba.png" alt="二维迷你BA前后：相机三角与点位置">
+      <figcaption>图 12-8　空心是真值，实心是估计。左：拧巴的初值。右：迭代后相机与点都靠近真值。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch12_points_cost.png" alt="二维迷你BA代价下降">
+      <figcaption>图 12-9　同一套二维玩具的代价曲线。你不需要会推大型稀疏矩阵——只要建立「残差 → 线性化 → 解增量 → 更新」的循环直觉。</figcaption>
+    </figure>
+    <p>工业级 BA（Ceres、g2o、OpenMVG/COLMAP 那一套）还会处理：海量观测的稀疏性、鲁棒损失（给错误匹配降权）、相机内参、镜头畸变、尺度/规范自由度（gauge freedom）。那些是工程课；本系列只要你<strong>知道它在优化什么、为什么成对不够</strong>。</p>
+
+    <h2 id="try">交互：拖噪声、看链式 vs BA</h2>
+    <p>下面用浏览器做一维朝向玩具。调「每对噪声」，看橙色链式末端漂多远；点「跑一次 BA」或拖「优化进度」，看青色结果被全局约束拉回去。可勾选闭环。</p>
+    <div class="playground">
+      <canvas id="ba-demo" class="demo tall" width="820" height="420" aria-label="链式累积与 BA 对比"></canvas>
+      <div class="controls">
+        <label for="noise">每对噪声 σ（度） <span id="noise-val">1.5</span></label>
+        <input id="noise" type="range" min="0" max="4" step="0.1" value="1.5">
+        <label for="ncam">图像张数 <span id="ncam-val">6</span></label>
+        <input id="ncam" type="range" min="4" max="8" step="1" value="6">
+        <label for="progress">BA 进度（示意） <span id="progress-val">0</span></label>
+        <input id="progress" type="range" min="0" max="100" step="1" value="0">
+        <label><input id="loop" type="checkbox" checked> 加入首尾闭环观测</label>
+      </div>
+      <div class="actions">
+        <button type="button" class="primary" id="ba-run">重新抽样噪声并 BA</button>
+        <button type="button" id="ba-reset">进度归零</button>
+      </div>
+      <p class="readout" id="ba-readout" aria-live="polite"></p>
+    </div>
+
+    <h2 id="run">运行脚本</h2>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <pre class="terminal"><code>source .venv/bin/activate   # 若尚未激活
+MPLCONFIGDIR=/tmp/mpl-cache python code/ch12_ba.py</code></pre>
+      <p>会写出 <code>ch12_pair_chain.png</code>、<code>ch12_ba_before_after.png</code>、<code>ch12_points_ba.png</code> 等课文图，以及你的 <code>ch12_my_ba.png</code>。末尾应打印「自检通过」。</p>
+    </div>
+
+    <h2 id="edit">改这里</h2>
+    <p>打开 <a href="code/ch12_ba.py"><code>code/ch12_ba.py</code></a>，只改顶部这一段：</p>
+    <pre><code># ===== 改这里 =====
+NOISE_DEG = 1.8      # 成对相对角噪声（度）
+N_ITERS = 12         # 高斯–牛顿步数
+USE_LOOP = True      # 是否加首尾闭环
+INIT_BIAS_DEG = 0.0  # 给初值再加一点偏置
+# ==================</code></pre>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>把 <code>NOISE_DEG</code> 改成 <code>0.0</code>：链式与 BA 都应几乎贴真值；RMSE 接近 0。</li>
+        <li>改成 <code>3.5</code>，并设 <code>USE_LOOP = False</code>：链式末端更飘；再改回 <code>True</code>，对比 BA 后 RMSE。</li>
+        <li>把 <code>N_ITERS</code> 改成 <code>1</code> 再改成 <code>20</code>：看 <code>ch12_my_ba.png</code> 标题里代价/RMSE 是否继续下降。</li>
+        <li>设 <code>INIT_BIAS_DEG = 5.0</code>：故意给坏初值，确认 BA 仍能把朝向拽回来（闭环打开时更稳）。</li>
+      </ol>
+    </div>
+
+    <h2 id="check">自测</h2>
+    <details class="quiz">
+      <summary>1. 为什么「每对都估得还行」，整条全景仍可能对不齐？</summary>
+      <p>每对误差虽小，链式连乘/累加会把偏差传到末端；没有全局约束时，错误只进不出。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. Bundle Adjustment 同时微调的两类量通常是什么？目标是让什么变小？</summary>
+      <p>相机位姿（以及可选内参）与三维点（或等价参数化）。目标是让重投影误差（预测投影与观测像素之差）整体变小。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. BA 在拼接流水线里通常插在哪两步之间？</summary>
+      <p>在「成对相对几何（H/位姿）」之后、「统一投影到画布 / 融合」之前，做全局纠偏。</p>
+    </details>
+    <details class="quiz">
+      <summary>4. 360° 全景里，闭环观测起什么作用？</summary>
+      <p>提供首尾也应对齐的约束，让优化把中间各站一起校正，减轻单向累积漂移。</p>
+    </details>
+    <details class="quiz">
+      <summary>5. 本篇为什么不要求手写大型 BA 求解器？</summary>
+      <p>工业求解器要处理稀疏结构、鲁棒核、规范自由度等；小白阶段先建立「全局一起降重投影误差」的直觉，小规模高斯–牛顿足够。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>下一篇离开「经典几何优化」，看可学习的特征：<strong>SuperPoint</strong> 与半稠密匹配 <strong>LoFTR</strong>——弱纹理场景里，它们何时比 ORB/SIFT 更香。</p>
+    <p><a href="13-deep-features.html">第 13 篇 · 深度学习特征：SuperPoint 与 LoFTR</a>（待写）</p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="11-exposure.html">上一篇</a>
+      <a href="index.html">目录</a>
+      <a href="13-deep-features.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+      var MUTED = "#5c564c";
+      var INK = "#1c1915";
+
+      var yawTrue = [];
+      var obs = [];
+      var chain = [];
+      var baTheta = [];
+      var seed = 12;
+
+      function mulberry32(a) {
+        return function () {
+          var t = (a += 0x6d2b79f5);
+          t = Math.imul(t ^ (t >>> 15), t | 1);
+          t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+          return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        };
+      }
+
+      function randn(rng) {
+        var u = 1 - rng();
+        var v = rng();
+        return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+      }
+
+      function makeTrue(n) {
+        var out = [];
+        for (var i = 0; i < n; i++) out.push((75 * i) / (n - 1));
+        return out;
+      }
+
+      function makeObs(yaw, sigma, useLoop, rng) {
+        var edges = [];
+        var n = yaw.length;
+        for (var i = 0; i < n - 1; i++) {
+          edges.push([i, i + 1, yaw[i + 1] - yaw[i] + sigma * randn(rng)]);
+        }
+        if (useLoop && n >= 3) {
+          edges.push([n - 1, 0, yaw[0] - yaw[n - 1] + sigma * randn(rng)]);
+        }
+        return edges;
+      }
+
+      function composeChain(edges, n) {
+        var th = new Array(n).fill(0);
+        for (var i = 0; i < n - 1; i++) {
+          for (var k = 0; k < edges.length; k++) {
+            if (edges[k][0] === i && edges[k][1] === i + 1) {
+              th[i + 1] = th[i] + edges[k][2];
+              break;
+            }
+          }
+        }
+        return th;
+      }
+
+      function cost(th, edges) {
+        var s = 0;
+        for (var k = 0; k < edges.length; k++) {
+          var e = th[edges[k][1]] - th[edges[k][0]] - edges[k][2];
+          s += 0.5 * e * e;
+        }
+        return s;
+      }
+
+      function baSolve(edges, n, iters, init) {
+        var th = init.slice();
+        th[0] = 0;
+        var free = [];
+        for (var i = 1; i < n; i++) free.push(i);
+        var m = free.length;
+        var hist = [cost(th, edges)];
+        var traj = [th.slice()];
+        for (var it = 0; it < iters; it++) {
+          var r = [];
+          var J = [];
+          for (var k = 0; k < edges.length; k++) {
+            var i = edges[k][0], j = edges[k][1], d = edges[k][2];
+            r.push(th[j] - th[i] - d);
+            var row = new Array(m).fill(0);
+            var fi = free.indexOf(i);
+            var fj = free.indexOf(j);
+            if (fi >= 0) row[fi] = -1;
+            if (fj >= 0) row[fj] = 1;
+            J.push(row);
+          }
+          // JtJ, Jtr
+          var jtj = [];
+          var jtr = new Array(m).fill(0);
+          for (var a = 0; a < m; a++) {
+            jtj[a] = new Array(m).fill(0);
+            jtj[a][a] = 1e-8;
+          }
+          for (var rowi = 0; rowi < r.length; rowi++) {
+            for (var a = 0; a < m; a++) {
+              jtr[a] += J[rowi][a] * r[rowi];
+              for (var b = 0; b < m; b++) jtj[a][b] += J[rowi][a] * J[rowi][b];
+            }
+          }
+          var delta = solveLinear(jtj, jtr.map(function (v) { return -v; }));
+          for (var a = 0; a < m; a++) th[free[a]] += delta[a];
+          hist.push(cost(th, edges));
+          traj.push(th.slice());
+        }
+        return { theta: th, hist: hist, traj: traj };
+      }
+
+      function solveLinear(A, b) {
+        // Gaussian elimination with partial pivot
+        var n = b.length;
+        var M = A.map(function (row, i) { return row.slice().concat([b[i]]); });
+        for (var col = 0; col < n; col++) {
+          var piv = col;
+          for (var r = col + 1; r < n; r++) {
+            if (Math.abs(M[r][col]) > Math.abs(M[piv][col])) piv = r;
+          }
+          var tmp = M[col]; M[col] = M[piv]; M[piv] = tmp;
+          var div = M[col][col] || 1e-12;
+          for (var c = col; c <= n; c++) M[col][c] /= div;
+          for (var r = 0; r < n; r++) {
+            if (r === col) continue;
+            var f = M[r][col];
+            for (var c = col; c <= n; c++) M[r][c] -= f * M[col][c];
+          }
+        }
+        return M.map(function (row) { return row[n]; });
+      }
+
+      function rmse(a, b) {
+        var s = 0;
+        for (var i = 0; i < a.length; i++) s += (a[i] - b[i]) * (a[i] - b[i]);
+        return Math.sqrt(s / a.length);
+      }
+
+      function lerpAngles(a, b, t) {
+        var out = [];
+        for (var i = 0; i < a.length; i++) out.push(a[i] + (b[i] - a[i]) * t);
+        return out;
+      }
+
+      var lastTraj = null;
+
+      function resample() {
+        var n = parseInt(document.getElementById("ncam").value, 10);
+        var sigma = parseFloat(document.getElementById("noise").value);
+        var useLoop = document.getElementById("loop").checked;
+        seed += 1;
+        var rng = mulberry32(seed);
+        yawTrue = makeTrue(n);
+        obs = makeObs(yawTrue, sigma, useLoop, rng);
+        chain = composeChain(obs, n);
+        var sol = baSolve(obs, n, 20, chain);
+        baTheta = sol.theta;
+        lastTraj = sol.traj;
+        document.getElementById("progress").value = "100";
+        document.getElementById("progress-val").textContent = "100";
+        draw();
+      }
+
+      function currentAngles() {
+        var t = parseInt(document.getElementById("progress").value, 10) / 100;
+        if (!lastTraj || lastTraj.length < 2) return lerpAngles(chain, baTheta, t);
+        var idx = Math.min(lastTraj.length - 1, Math.round(t * (lastTraj.length - 1)));
+        return lastTraj[idx];
+      }
+
+      function surface(canvas) {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var width = canvas.clientWidth || 640;
+        var height = canvas.clientHeight || 420;
+        var pw = Math.round(width * dpr);
+        var ph = Math.round(height * dpr);
+        if (canvas.width !== pw || canvas.height !== ph) {
+          canvas.width = pw;
+          canvas.height = ph;
+        }
+        var ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(0, 0, width, height);
+        return { ctx: ctx, width: width, height: height };
+      }
+
+      function drawRays(ctx, cx, cy, R, angles, color, scale, labelPrefix) {
+        for (var i = 0; i < angles.length; i++) {
+          var a = (angles[i] * Math.PI) / 180;
+          var x = cx + scale * R * Math.cos(a);
+          var y = cy - scale * R * Math.sin(a);
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 2.2;
+          ctx.beginPath();
+          ctx.moveTo(cx, cy);
+          ctx.lineTo(x, y);
+          ctx.stroke();
+          ctx.fillStyle = color;
+          ctx.beginPath();
+          ctx.arc(x, y, 4.5, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = color;
+          ctx.font = "12px sans-serif";
+          ctx.fillText((labelPrefix || "") + i, x + 6, y - 4);
+        }
+      }
+
+      function draw() {
+        var canvas = document.getElementById("ba-demo");
+        var s = surface(canvas);
+        var ctx = s.ctx;
+        var W = s.width, H = s.height;
+        var cx = W * 0.32, cy = H * 0.48, R = Math.min(W, H) * 0.28;
+        var est = currentAngles();
+
+        ctx.strokeStyle = MUTED;
+        ctx.setLineDash([5, 5]);
+        ctx.beginPath();
+        ctx.arc(cx, cy, R, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // true
+        drawRays(ctx, cx, cy, R, yawTrue, MUTED, 1.0, "");
+        // chain ghost
+        drawRays(ctx, cx, cy, R, chain, WAVE, 0.78, "");
+        // current BA blend
+        drawRays(ctx, cx, cy, R, est, TEAL, 0.92, "");
+
+        ctx.fillStyle = INK;
+        ctx.font = "13px sans-serif";
+        ctx.fillText("灰虚线圆 + 灰射线：真值朝向", 16, 28);
+        ctx.fillStyle = WAVE;
+        ctx.fillText("橙：纯链式累加", 16, 48);
+        ctx.fillStyle = TEAL;
+        ctx.fillText("青：BA 轨迹上的当前进度", 16, 68);
+
+        // side panel bars
+        var left = W * 0.58;
+        ctx.fillStyle = INK;
+        ctx.font = "14px sans-serif";
+        ctx.fillText("各图朝向误差 |估计−真值|", left, 36);
+        var maxE = 1;
+        for (var i = 0; i < yawTrue.length; i++) {
+          maxE = Math.max(maxE, Math.abs(chain[i] - yawTrue[i]), Math.abs(est[i] - yawTrue[i]));
+        }
+        var barW = W * 0.34;
+        for (var i = 0; i < yawTrue.length; i++) {
+          var y = 58 + i * 36;
+          var eChain = Math.abs(chain[i] - yawTrue[i]);
+          var eBa = Math.abs(est[i] - yawTrue[i]);
+          ctx.fillStyle = MUTED;
+          ctx.fillText("图 " + i, left, y + 12);
+          ctx.fillStyle = "#f3e6d8";
+          ctx.fillRect(left + 40, y, barW, 10);
+          ctx.fillStyle = WAVE;
+          ctx.fillRect(left + 40, y, barW * (eChain / maxE), 10);
+          ctx.fillStyle = "#e5f3f1";
+          ctx.fillRect(left + 40, y + 14, barW, 10);
+          ctx.fillStyle = TEAL;
+          ctx.fillRect(left + 40, y + 14, barW * (eBa / maxE), 10);
+        }
+
+        var rc = rmse(chain, yawTrue);
+        var rb = rmse(est, yawTrue);
+        var readout = document.getElementById("ba-readout");
+        readout.textContent =
+          "链式 RMSE = " + rc.toFixed(2) + "°　｜　当前 BA RMSE = " + rb.toFixed(2) + "°　｜　代价 = " +
+          cost(est, obs).toFixed(3) + "（闭环 " + (document.getElementById("loop").checked ? "开" : "关") + "）";
+      }
+
+      function bind() {
+        var noise = document.getElementById("noise");
+        var ncam = document.getElementById("ncam");
+        var progress = document.getElementById("progress");
+        var loop = document.getElementById("loop");
+        noise.addEventListener("input", function () {
+          document.getElementById("noise-val").textContent = noise.value;
+          resample();
+        });
+        ncam.addEventListener("input", function () {
+          document.getElementById("ncam-val").textContent = ncam.value;
+          resample();
+        });
+        progress.addEventListener("input", function () {
+          document.getElementById("progress-val").textContent = progress.value;
+          draw();
+        });
+        loop.addEventListener("change", resample);
+        document.getElementById("ba-run").addEventListener("click", resample);
+        document.getElementById("ba-reset").addEventListener("click", function () {
+          progress.value = "0";
+          document.getElementById("progress-val").textContent = "0";
+          draw();
+        });
+        window.addEventListener("resize", draw);
+      }
+
+      bind();
+      resample();
+    })();
+  </script>
+</body>
+</html>

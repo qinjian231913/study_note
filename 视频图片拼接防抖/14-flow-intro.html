@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 14 篇 · 光流是什么：亮度守恒与孔径问题</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        拼接与防抖 · 图像视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="13-learned.html">第 13 篇</a>
+        <a href="14-flow-intro.html" aria-current="page">第 14 篇</a>
+        <a href="15-lucas-kanade.html">第 15 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 14 篇 · 光流重点 · 约 55 分钟 · 概念课</p>
+    <h1>光流是什么：亮度守恒与孔径问题</h1>
+    <p class="lede">从一个小亮斑在两帧之间「挪了几个像素」讲起。本篇几乎不算算法：先钉死光流在回答什么问题，再讲亮度守恒从哪来、何时破，最后用遮罩动画亲手感受孔径问题。读完你应该能自然接上第 15 篇的 Lucas-Kanade。</p>
+    <div class="meta">
+      <span class="pill">零基础可跳读到此篇</span>
+      <span class="pill">重点 · 多交互</span>
+      <span class="pill">下一篇：稀疏 LK</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#see">先看见：亮斑挪了几个像素</a></li>
+        <li><a href="#define">定义：表观运动 ≠ 真实 3D 速度</a></li>
+        <li><a href="#bright">亮度守恒：从哪来、何时破</a></li>
+        <li><a href="#eq">一个像素只能写出「一条约束」</a></li>
+        <li><a href="#aperture">孔径问题：只看法向</a></li>
+        <li><a href="#why-window">为什么后面要窗口 / 角点</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改这里</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="see">先看见：亮斑挪了几个像素</h2>
+    <p>忘掉公式。想象两张连续的照片（视频的相邻两帧）：</p>
+    <ul>
+      <li>第 <strong>t</strong> 帧：暗背景上有一个小亮斑，中心大概在左边。</li>
+      <li>第 <strong>t+1</strong> 帧：同一个亮斑偏到了右边一点、上面一点。</li>
+    </ul>
+    <p>人眼立刻会说：「它往右上挪了。」计算机也想回答同一个问题——但要用数字：水平挪了多少像素、竖直挪了多少像素。这两个数合起来写成向量 <strong>(u, v)</strong>，就是这一小块的<strong>光流</strong>直觉。</p>
+    <figure>
+      <img src="assets/figures/ch14_blob_shift.png" alt="两帧亮斑与表观位移箭头">
+      <figcaption>图 14-1　左：第 t 帧。中：第 t+1 帧。右：半透明叠在一起，橙色箭头就是表观位移 (u, v)。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>类比：你在玻璃窗上用笔点一个小墨点，然后玻璃后面有人走过。墨点相对「窗框格子」挪了几个格——这是<strong>平面上的位移</strong>。墨点背后那个人在三维空间里怎么迈步，窗上的格子并不会直接告诉你。</p>
+    </div>
+
+    <h3>交互：自己拨一下位移</h3>
+    <p>拖动滑块，看「下一帧」亮斑怎么走，以及读数 (u, v)。这就是光流在图像平面上的全部内容：<strong>像素坐标的变化</strong>。</p>
+    <div class="playground">
+      <canvas id="blob-demo" class="demo" width="820" height="280" aria-label="亮斑位移示意"></canvas>
+      <div class="controls">
+        <label for="blob-u">水平 u</label>
+        <input id="blob-u" type="range" min="-40" max="40" value="14" step="1">
+        <output id="blob-u-out" for="blob-u">14</output>
+        <label for="blob-v">竖直 v</label>
+        <input id="blob-v" type="range" min="-30" max="30" value="-8" step="1">
+        <output id="blob-v-out" for="blob-v">-8</output>
+      </div>
+      <p class="readout" id="blob-readout" aria-live="polite"></p>
+    </div>
+
+    <h2 id="define">定义：表观运动 ≠ 真实 3D 速度</h2>
+    <p>正式说法（请背住这一句）：</p>
+    <div class="callout note">
+      <p><strong>光流</strong>是图像平面上的<strong>二维表观运动场</strong>：每个像素（或每个小块）看起来往哪儿挪、挪多快。它<strong>不等于</strong>物体在三维世界里的真实速度。</p>
+    </div>
+    <p>为什么要强调「表观」？因为屏幕上「往右挪了 5 像素」可以来自很多完全不同的三维故事：</p>
+    <ul>
+      <li>物体自己向右平移；</li>
+      <li>物体不动，相机向左平移（背景相对往右走）；</li>
+      <li>物体绕轴旋转，条纹却像在斜着爬（经典「理发店灯柱」错觉）；</li>
+      <li>光照图案在物体表面滑动（其实物体几乎没动）。</li>
+    </ul>
+    <figure>
+      <img src="assets/figures/ch14_apparent_vs_3d.png" alt="表观运动与三维原因对照">
+      <figcaption>图 14-2　左：不同 3D 原因可以投出相似的像素位移。右：旋转柱子时，图像上的条纹表观方向可以和真实旋转轴不一致。</figcaption>
+    </figure>
+    <p>对拼接与防抖来说，多数时候我们<strong>只需要表观</strong>：像素怎么对齐、轨迹怎么抖，不必先还原完整 3D 速度场。等要用深度、结构时，再另开模型——那已经超出「光流」四个字本身。</p>
+    <div class="callout try">
+      <h3>心里演一遍</h3>
+      <p>站在公交站拍对面的车：车向右开，光流大致向右；你自己突然向左横移半步，背景也会出现向右的光流。两种情况下，「屏幕上的箭头」可能长得很像，但世界里发生的事不同。</p>
+    </div>
+
+    <h2 id="bright">亮度守恒：从哪来、何时破</h2>
+    <p>光流算法几乎都从一个大胆但好用的假设出发：</p>
+    <p class="formula">同一物理点，在相邻两帧里的灰度近似不变</p>
+    <p>白话：你跟着那颗「小亮斑」本身走，它的亮度别突然变。变的是<strong>它所在的像素坐标</strong>，不是它「自己变黑变白」。</p>
+    <figure>
+      <img src="assets/figures/ch14_brightness_constancy.png" alt="跟随物理点灰度不变，固定像素灰度会变">
+      <figcaption>图 14-3　左：跟着物理点走，灰度差不多（守恒）。右：盯着固定格子，亮斑扫过时格子从暗变亮——这正是时间变化 I<sub>t</sub>。</figcaption>
+    </figure>
+
+    <h3>假设从哪来？</h3>
+    <p>它不是物理定律，而是<strong>工程近似</strong>：</p>
+    <ol>
+      <li>帧间隔很短（几十毫秒），光照来不及大变；</li>
+      <li>表面大致是漫反射，不怎么「随视角闪高光」；</li>
+      <li>我们讨论的是灰度（或某个颜色通道），不是语义「这是同一辆车」。</li>
+    </ol>
+    <p>类比：你用记号笔在桌面上点一个点，手机连拍两张。只要灯没闪、墨点没被手挡住，两张里那个点的「灰度数」差不多——差的是它落在照片的哪一格。</p>
+
+    <h3>何时破？</h3>
+    <p>下面这些情况，亮度守恒会撒谎，光流也容易翻车：</p>
+    <figure>
+      <img src="assets/figures/ch14_brightness_breaks.png" alt="光照突变、镜面、遮挡三类失败">
+      <figcaption>图 14-4　三类常见破坏：曝光/开灯、高光挪位、遮挡与露出。第 18 篇会系统看失败模式。</figcaption>
+    </figure>
+    <div class="playground">
+      <p style="margin-top:0">交互：切换「守恒 / 破坏」模式。守恒时，移动亮斑，跟随点的灰度读数几乎不变；破坏模式下开灯，同一物理点灰度跳变——约束方程的前提就松了。</p>
+      <canvas id="bright-demo" class="demo" width="820" height="280" aria-label="亮度守恒与破坏示意"></canvas>
+      <div class="controls">
+        <label for="bright-shift">位移</label>
+        <input id="bright-shift" type="range" min="0" max="50" value="18" step="1">
+        <output id="bright-shift-out" for="bright-shift">18</output>
+      </div>
+      <div class="actions">
+        <button type="button" class="primary" id="bright-ok">守恒模式</button>
+        <button type="button" id="bright-break">开灯破坏</button>
+      </div>
+      <p class="readout" id="bright-readout" aria-live="polite"></p>
+    </div>
+
+    <h2 id="eq">一个像素只能写出「一条约束」</h2>
+    <p>把「跟着物理点走，灰度不变」写成一点微积分味道（别怕，只记形状）：</p>
+    <p class="formula">I<sub>x</sub> · u + I<sub>y</sub> · v + I<sub>t</sub> = 0</p>
+    <p>白话拆开：</p>
+    <ul>
+      <li><strong>I<sub>x</sub>, I<sub>y</sub></strong>：这一小块在空间上「左比右亮多少、上比下亮多少」（图像梯度）；</li>
+      <li><strong>I<sub>t</sub></strong>：同一像素坐标，这一帧比上一帧亮了还是暗了（时间变化）；</li>
+      <li><strong>u, v</strong>：我们要求的表观速度——两个未知数。</li>
+    </ul>
+    <p>一个方程、两个未知数 → 解不唯一。几何上，所有满足它的 (u, v) 落在 <strong>(u, v) 平面的一条直线</strong>上。</p>
+    <figure>
+      <img src="assets/figures/ch14_constraint_line.png" alt="光流约束直线与法向光流">
+      <figcaption>图 14-5　青色直线上每一个点都「满足亮度守恒」。橙色箭头是其中最短的那个解，叫<strong>法向光流</strong>；沿着直线再滑一段（切向），约束仍然成立——这就是孔径问题的数学脸。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>本篇<strong>不算</strong>怎么解这条直线。你只要留下印象：单像素信息不够钉死二维运动。第 15 篇会在窗口里把很多条「直线」叠起来，用最小二乘找一个折中的 (u, v)。</p>
+    </div>
+
+    <h3>交互：拧梯度，看约束直线怎么转</h3>
+    <div class="playground">
+      <canvas id="constraint-demo" class="demo tall" width="820" height="380" aria-label="约束直线交互"></canvas>
+      <div class="controls">
+        <label for="c-ix">I<sub>x</sub></label>
+        <input id="c-ix" type="range" min="-4" max="4" value="2" step="0.1">
+        <output id="c-ix-out" for="c-ix">2.0</output>
+        <label for="c-iy">I<sub>y</sub></label>
+        <input id="c-iy" type="range" min="-4" max="4" value="0.5" step="0.1">
+        <output id="c-iy-out" for="c-iy">0.5</output>
+        <label for="c-it">I<sub>t</sub></label>
+        <input id="c-it" type="range" min="-12" max="12" value="-8" step="0.5">
+        <output id="c-it-out" for="c-it">-8.0</output>
+      </div>
+      <p class="readout" id="constraint-readout" aria-live="polite"></p>
+    </div>
+
+    <h2 id="aperture">孔径问题：只看法向</h2>
+    <p>这是本篇的核心直觉实验。</p>
+    <p>想象你透过<strong>钥匙孔</strong>看一面有竖条纹的墙。墙其实整体向右平移。可是孔太小，你只看见一条竖边在眼前。边「沿线方向」向上滑一点或向下滑一点，透过小孔看起来几乎一样——你只知道「边在靠近或远离孔心」，不知道它有没有沿着自己「蹭」。</p>
+    <ul>
+      <li><strong>法向</strong>：垂直于边缘的方向——亮度变化最剧烈，运动分量往往能看出来；</li>
+      <li><strong>切向</strong>：顺着边缘的方向——灰度几乎不变，运动分量<strong>不确定</strong>。</li>
+    </ul>
+    <figure>
+      <img src="assets/figures/ch14_aperture.png" alt="整幅可见、小孔遮罩、法向与切向">
+      <figcaption>图 14-6　左：整幅时方向清楚。中：小孔遮罩后只剩局部边。右：法向可估，切向像一把扇形候选。</figcaption>
+    </figure>
+
+    <h3>交互：遮罩 + 动画（必玩）</h3>
+    <p>青色圆是「孔径」。条纹按<strong>真实运动</strong>（可含切向）在动。缩小孔径时，你很难分辨「只法向」和「法向+切向」——读数会提示歧义变大。放大孔径或换成「角点图案」，歧义下降。</p>
+    <div class="playground">
+      <canvas id="aperture-demo" class="demo tall" width="820" height="380" aria-label="孔径问题遮罩动画"></canvas>
+      <div class="controls">
+        <label for="ap-radius">孔径半径</label>
+        <input id="ap-radius" type="range" min="18" max="120" value="36" step="1">
+        <output id="ap-radius-out" for="ap-radius">36</output>
+        <label for="ap-normal">法向速度</label>
+        <input id="ap-normal" type="range" min="0" max="4" value="1.6" step="0.1">
+        <output id="ap-normal-out" for="ap-normal">1.6</output>
+        <label for="ap-tangential">切向速度</label>
+        <input id="ap-tangential" type="range" min="-4" max="4" value="2.0" step="0.1">
+        <output id="ap-tangential-out" for="ap-tangential">2.0</output>
+      </div>
+      <div class="actions">
+        <button type="button" class="primary" id="ap-play">暂停 / 播放</button>
+        <button type="button" id="ap-edge">竖条纹（易歧义）</button>
+        <button type="button" id="ap-corner">角点图案（易唯一）</button>
+        <button type="button" id="ap-full">去掉遮罩看全图</button>
+      </div>
+      <p class="readout" id="aperture-readout" aria-live="polite"></p>
+    </div>
+    <div class="callout try">
+      <h3>建议操作顺序</h3>
+      <ol>
+        <li>先选「竖条纹」，孔径拧到很小，把切向速度拧来拧去——透过孔看，条纹「样子」几乎不变。</li>
+        <li>点「去掉遮罩看全图」，你会突然看清切向其实差很多。</li>
+        <li>换成「角点图案」，即使孔径不大，运动方向也稳得多——因为两个方向都有纹理变化。</li>
+      </ol>
+    </div>
+
+    <h2 id="why-window">为什么后面要窗口 / 角点</h2>
+    <p>孔径问题告诉我们：<strong>一条边不够</strong>。解药的方向很直观：</p>
+    <ol>
+      <li><strong>看更大一点</strong>：在特征点周围开一个小窗口，窗口里有多条边、最好有角点；</li>
+      <li><strong>假设窗口内运动差不多</strong>：共用同一个 (u, v)，于是很多条约束直线一起投票；</li>
+      <li><strong>用最小二乘找折中</strong>：这就是 Lucas-Kanade 的骨架（第 15 篇）。</li>
+    </ol>
+    <figure>
+      <img src="assets/figures/ch14_corner_vs_edge.png" alt="边缘与角点对比">
+      <figcaption>图 14-7　左：纯边缘 → 切向漂。右：角点 → 两个方向的梯度都非零，二维位移更容易唯一。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch14_bridge_lk.png" alt="从单像素约束到窗口最小二乘">
+      <figcaption>图 14-8　本篇停在「一条直线」；下一篇把窗口里的直线叠成超定方程。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>稠密光流（第 17 篇）换另一剂药：不靠角点，而靠「邻居运动应该平滑」的额外假设。殊途同归——都是在给欠定问题加约束。</p>
+    </div>
+
+    <h2 id="run">运行脚本</h2>
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <pre class="terminal"><code>source .venv/bin/activate   # 若尚未激活
+MPLCONFIGDIR=/tmp/mpl-cache python code/ch14_flow_intro.py</code></pre>
+      <p>会写出 <code>ch14_blob_shift.png</code>、<code>ch14_apparent_vs_3d.png</code>、<code>ch14_brightness_*.png</code>、<code>ch14_constraint_line.png</code>、<code>ch14_aperture.png</code>、<code>ch14_corner_vs_edge.png</code>、<code>ch14_bridge_lk.png</code>，以及你的 <code>ch14_my_blob.png</code>、<code>ch14_my_constraint.png</code>。终端应打印「自检通过」。</p>
+    </div>
+
+    <h2 id="edit">改这里</h2>
+    <p>打开 <a href="code/ch14_flow_intro.py"><code>code/ch14_flow_intro.py</code></a> 顶部的参数区。</p>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>把 <code>BLOB_SHIFT_X / BLOB_SHIFT_Y</code> 改成很大的数（比如 40, −20），看 <code>ch14_my_blob.png</code>——表观位移箭头变长。想一想：位移太大时，下一篇的「单层 LK」为什么会吃力（需要金字塔）。</li>
+        <li>把 <code>GRADIENT_IX</code> 设为 0、<code>GRADIENT_IY</code> 设为 3，观察 <code>ch14_my_constraint.png</code>：约束直线近乎水平，法向光流几乎只有竖直分量——对应「只看见水平边」。</li>
+        <li>把 <code>GRADIENT_IX</code> 与 <code>GRADIENT_IY</code> 都改成接近 0：梯度消失，约束退化，脚本仍会画，但直线失去意义——平坦区域无法估光流。</li>
+      </ol>
+    </div>
+
+    <h2 id="check">自测</h2>
+    <details class="quiz">
+      <summary>1. 光流描述的是什么？它等于物体的真实 3D 速度吗？</summary>
+      <p>光流是图像平面上的二维表观运动场。不等于真实 3D 速度；同一表观可由多种三维运动或光照变化造成。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. 亮度守恒假设在说什么？举一个它会破的例子。</summary>
+      <p>同一物理点在相邻帧的灰度近似不变。开灯/曝光突变、镜面高光、遮挡露出等都会破坏它。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. 为什么说「一个像素只有一条光流约束」？</summary>
+      <p>亮度守恒给出 I<sub>x</sub> u + I<sub>y</sub> v + I<sub>t</sub> = 0：一个方程、两个未知数 (u,v)，解落在一条直线上。</p>
+    </details>
+    <details class="quiz">
+      <summary>4. 孔径问题里，什么方向通常能确定？什么方向不确定？</summary>
+      <p>垂直于边缘的法向分量往往能看出；顺着边缘的切向分量不确定。</p>
+    </details>
+    <details class="quiz">
+      <summary>5. 透过很小的钥匙孔看一条竖边向右平移，同时叠加上/下滑动，为什么孔内「看起来差不多」？</summary>
+      <p>孔内主要只看到法向造成的亮度变化；切向滑动几乎不改变孔内灰度模式，所以多种切向速度对应几乎同一观测。</p>
+    </details>
+    <details class="quiz">
+      <summary>6. 第 15 篇 Lucas-Kanade 准备如何「补上」本篇缺的信息？（一句话）</summary>
+      <p>在特征点附近的小窗口内假设共用同一 (u,v)，把多条亮度约束叠成超定方程，用最小二乘求解。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>概念钉牢了。下一篇进入真正的稀疏算法：<strong>Lucas-Kanade</strong>——窗口、法方程、以及 OpenCV <code>calcOpticalFlowPyrLK</code> 在「单层」时在做什么。</p>
+    <p><a href="15-lucas-kanade.html">第 15 篇 · 稀疏光流：Lucas-Kanade</a>（待写）</p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="13-learned.html">上一篇</a>
+      <a href="index.html">目录</a>
+      <a href="15-lucas-kanade.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+      var MUTED = "#5c564c";
+      var INK = "#1c1915";
+      var PAPER = "#fffdf8";
+
+      function surface(canvas) {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var width = canvas.clientWidth || 640;
+        var height = canvas.clientHeight || 280;
+        var pw = Math.round(width * dpr);
+        var ph = Math.round(height * dpr);
+        if (canvas.width !== pw || canvas.height !== ph) {
+          canvas.width = pw;
+          canvas.height = ph;
+        }
+        var ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = PAPER;
+        ctx.fillRect(0, 0, width, height);
+        return { ctx: ctx, width: width, height: height };
+      }
+
+      function drawPanelFrame(ctx, x, y, w, h, title) {
+        ctx.strokeStyle = "#e3d9c8";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+        ctx.fillStyle = MUTED;
+        ctx.font = "13px sans-serif";
+        ctx.fillText(title, x + 8, y - 6);
+      }
+
+      // ---------- 亮斑位移 ----------
+      function setupBlob() {
+        var canvas = document.getElementById("blob-demo");
+        var uEl = document.getElementById("blob-u");
+        var vEl = document.getElementById("blob-v");
+        var uOut = document.getElementById("blob-u-out");
+        var vOut = document.getElementById("blob-v-out");
+        var readout = document.getElementById("blob-readout");
+
+        function paint() {
+          var s = surface(canvas);
+          var ctx = s.ctx;
+          var u = +uEl.value;
+          var v = +vEl.value;
+          uOut.textContent = u;
+          vOut.textContent = v;
+
+          var panelW = (s.width - 36) / 3;
+          var panelH = s.height - 36;
+          var y0 = 22;
+          var panels = [
+            { x: 8, title: "第 t 帧" },
+            { x: 18 + panelW, title: "第 t+1 帧" },
+            { x: 28 + 2 * panelW, title: "叠加以看箭头" }
+          ];
+
+          function blob(cx, cy, alpha) {
+            var g = ctx.createRadialGradient(cx, cy, 2, cx, cy, 22);
+            g.addColorStop(0, "rgba(255,220,180," + alpha + ")");
+            g.addColorStop(1, "rgba(40,36,32,0)");
+            ctx.fillStyle = g;
+            ctx.beginPath();
+            ctx.arc(cx, cy, 22, 0, Math.PI * 2);
+            ctx.fill();
+          }
+
+          panels.forEach(function (p, i) {
+            drawPanelFrame(ctx, p.x, y0, panelW, panelH, p.title);
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(p.x, y0, panelW, panelH);
+            ctx.clip();
+            ctx.fillStyle = "#2a241c";
+            ctx.fillRect(p.x, y0, panelW, panelH);
+            var cx = p.x + panelW * 0.38;
+            var cy = y0 + panelH * 0.55;
+            if (i === 0) {
+              blob(cx, cy, 1);
+            } else if (i === 1) {
+              blob(cx + u, cy + v, 1);
+            } else {
+              blob(cx, cy, 0.55);
+              blob(cx + u, cy + v, 0.9);
+              ctx.strokeStyle = WAVE;
+              ctx.lineWidth = 2.5;
+              ctx.beginPath();
+              ctx.moveTo(cx, cy);
+              ctx.lineTo(cx + u, cy + v);
+              ctx.stroke();
+              ctx.fillStyle = TEAL;
+              ctx.beginPath();
+              ctx.arc(cx, cy, 3.5, 0, Math.PI * 2);
+              ctx.fill();
+              ctx.fillStyle = WAVE;
+              ctx.beginPath();
+              ctx.arc(cx + u, cy + v, 3.5, 0, Math.PI * 2);
+              ctx.fill();
+            }
+            ctx.restore();
+          });
+
+          var speed = Math.sqrt(u * u + v * v).toFixed(1);
+          readout.textContent =
+            "表观运动 (u, v) = (" + u + ", " + v + ") 像素/帧，长度 ≈ " + speed +
+            "。注意：这只是图像平面上的位移，不是三维速度。";
+        }
+
+        uEl.addEventListener("input", paint);
+        vEl.addEventListener("input", paint);
+        window.addEventListener("resize", paint);
+        paint();
+      }
+
+      // ---------- 亮度守恒 ----------
+      function setupBright() {
+        var canvas = document.getElementById("bright-demo");
+        var shiftEl = document.getElementById("bright-shift");
+        var shiftOut = document.getElementById("bright-shift-out");
+        var readout = document.getElementById("bright-readout");
+        var broken = false;
+
+        function paint() {
+          var s = surface(canvas);
+          var ctx = s.ctx;
+          var shift = +shiftEl.value;
+          shiftOut.textContent = String(shift);
+          var boost = broken ? 70 : 0;
+
+          var cx0 = s.width * 0.28;
+          var cy = s.height * 0.55;
+          var cx1 = cx0 + shift;
+
+          function intensityAt(cx) {
+            // 跟随物理点的采样：斑中心灰度
+            return Math.min(255, 185 + boost);
+          }
+
+          ctx.fillStyle = "#2a241c";
+          ctx.fillRect(0, 0, s.width * 0.5 - 6, s.height);
+          ctx.fillStyle = broken ? "#3a3420" : "#2a241c";
+          ctx.fillRect(s.width * 0.5 + 6, 0, s.width * 0.5 - 6, s.height);
+
+          function drawBlob(cx, bright) {
+            var g = ctx.createRadialGradient(cx, cy, 2, cx, cy, 28);
+            var c0 = broken ? "rgb(255,240,150)" : "rgb(255,210,170)";
+            g.addColorStop(0, c0);
+            g.addColorStop(1, "rgba(0,0,0,0)");
+            ctx.fillStyle = g;
+            ctx.beginPath();
+            ctx.arc(cx, cy, 28, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = PAPER;
+            ctx.font = "12px sans-serif";
+            ctx.fillText("I≈" + bright, cx - 14, cy + 44);
+          }
+
+          drawBlob(cx0, intensityAt(cx0) - (broken ? 70 : 0));
+          drawBlob(cx1, intensityAt(cx1));
+
+          ctx.fillStyle = MUTED;
+          ctx.font = "13px sans-serif";
+          ctx.fillText("第 t 帧", 16, 22);
+          ctx.fillText("第 t+1 帧", s.width * 0.5 + 22, 22);
+
+          ctx.strokeStyle = TEAL;
+          ctx.setLineDash([4, 4]);
+          ctx.strokeRect(s.width * 0.5 + 6 + (cx1 - (s.width * 0.5 + 6)) - 18, cy - 18, 36, 36);
+          ctx.setLineDash([]);
+
+          if (broken) {
+            readout.textContent =
+              "开灯破坏：同一物理点灰度从约 " + (185) + " 跳到约 " + (185 + boost) +
+              "。亮度守恒不再成立，单靠灰度匹配会估错运动。";
+          } else {
+            readout.textContent =
+              "守恒模式：跟随亮斑中心，两帧灰度都约 185。变的是位置（位移 " +
+              shift + " px），不是「自己变亮变暗」。";
+          }
+        }
+
+        document.getElementById("bright-ok").addEventListener("click", function () {
+          broken = false;
+          paint();
+        });
+        document.getElementById("bright-break").addEventListener("click", function () {
+          broken = true;
+          paint();
+        });
+        shiftEl.addEventListener("input", paint);
+        window.addEventListener("resize", paint);
+        paint();
+      }
+
+      // ---------- 约束直线 ----------
+      function setupConstraint() {
+        var canvas = document.getElementById("constraint-demo");
+        var ixEl = document.getElementById("c-ix");
+        var iyEl = document.getElementById("c-iy");
+        var itEl = document.getElementById("c-it");
+        var readout = document.getElementById("constraint-readout");
+
+        function paint() {
+          var s = surface(canvas);
+          var ctx = s.ctx;
+          var ix = +ixEl.value;
+          var iy = +iyEl.value;
+          var it = +itEl.value;
+          document.getElementById("c-ix-out").textContent = ix.toFixed(1);
+          document.getElementById("c-iy-out").textContent = iy.toFixed(1);
+          document.getElementById("c-it-out").textContent = it.toFixed(1);
+
+          var cx = s.width * 0.5;
+          var cy = s.height * 0.52;
+          var scale = Math.min(s.width, s.height) * 0.06;
+
+          ctx.strokeStyle = "#e6dccb";
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(40, cy);
+          ctx.lineTo(s.width - 20, cy);
+          ctx.moveTo(cx, 28);
+          ctx.lineTo(cx, s.height - 24);
+          ctx.stroke();
+          ctx.fillStyle = MUTED;
+          ctx.font = "12px sans-serif";
+          ctx.fillText("u", s.width - 28, cy - 8);
+          ctx.fillText("v", cx + 8, 36);
+
+          var denom = ix * ix + iy * iy;
+          if (denom < 1e-6) {
+            readout.textContent = "梯度≈0：平坦区域，约束退化，无法估计光流。";
+            ctx.fillStyle = WAVE;
+            ctx.font = "16px sans-serif";
+            ctx.fillText("梯度太弱，没有可靠直线", cx - 90, cy);
+            return;
+          }
+
+          var un = (-it * ix) / denom;
+          var vn = (-it * iy) / denom;
+          var nx = ix / Math.sqrt(denom);
+          var ny = iy / Math.sqrt(denom);
+          var tx = -ny;
+          var ty = nx;
+
+          ctx.strokeStyle = TEAL;
+          ctx.lineWidth = 2.5;
+          ctx.beginPath();
+          for (var k = -12; k <= 12; k += 0.5) {
+            var u = un + k * tx;
+            var v = vn + k * ty;
+            var x = cx + u * scale;
+            var y = cy - v * scale;
+            if (k === -12) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          }
+          ctx.stroke();
+
+          // 法向光流
+          ctx.strokeStyle = WAVE;
+          ctx.lineWidth = 2.5;
+          ctx.beginPath();
+          ctx.moveTo(cx, cy);
+          ctx.lineTo(cx + un * scale, cy - vn * scale);
+          ctx.stroke();
+          ctx.fillStyle = WAVE;
+          ctx.beginPath();
+          ctx.arc(cx + un * scale, cy - vn * scale, 5, 0, Math.PI * 2);
+          ctx.fill();
+
+          // 两个切向候选
+          [2.5, -2.5].forEach(function (k) {
+            var u = un + k * tx;
+            var v = vn + k * ty;
+            ctx.fillStyle = TEAL;
+            ctx.beginPath();
+            ctx.arc(cx + u * scale, cy - v * scale, 4.5, 0, Math.PI * 2);
+            ctx.fill();
+          });
+
+          ctx.fillStyle = INK;
+          ctx.font = "13px sans-serif";
+          ctx.fillText("法向光流（最短解）", cx + un * scale + 10, cy - vn * scale - 8);
+          ctx.fillStyle = TEAL;
+          ctx.fillText("切向滑动仍合法", cx + 20, 50);
+
+          readout.textContent =
+            "I_x u + I_y v + I_t = 0。法向解 (u,v)≈(" +
+            un.toFixed(2) + ", " + vn.toFixed(2) +
+            ")。青点是加上/减去切向后的另两个合法解——孔径问题的数学版。";
+        }
+
+        [ixEl, iyEl, itEl].forEach(function (el) {
+          el.addEventListener("input", paint);
+        });
+        window.addEventListener("resize", paint);
+        paint();
+      }
+
+      // ---------- 孔径动画 ----------
+      function setupAperture() {
+        var canvas = document.getElementById("aperture-demo");
+        var rEl = document.getElementById("ap-radius");
+        var nEl = document.getElementById("ap-normal");
+        var tEl = document.getElementById("ap-tangential");
+        var readout = document.getElementById("aperture-readout");
+        var playing = true;
+        var pattern = "edge"; // edge | corner
+        var maskOn = true;
+        var phase = 0;
+        var last = performance.now();
+
+        function paint(ts) {
+          var dt = Math.min(0.05, (ts - last) / 1000);
+          last = ts;
+          var vn = +nEl.value;
+          var vt = +tEl.value;
+          var radius = +rEl.value;
+          document.getElementById("ap-radius-out").textContent = String(radius);
+          document.getElementById("ap-normal-out").textContent = vn.toFixed(1);
+          document.getElementById("ap-tangential-out").textContent = vt.toFixed(1);
+
+          if (playing) {
+            // 法向取水平，切向取竖直（对竖边）
+            phase += vn * dt * 18;
+          }
+
+          var s = surface(canvas);
+          var ctx = s.ctx;
+          var cx = s.width * 0.5;
+          var cy = s.height * 0.52;
+
+          // 背景图案（在离屏逻辑坐标绘制）
+          ctx.save();
+          if (maskOn) {
+            ctx.fillStyle = "#1c1915";
+            ctx.fillRect(0, 0, s.width, s.height);
+            ctx.beginPath();
+            ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+            ctx.clip();
+          }
+
+          ctx.fillStyle = PAPER;
+          ctx.fillRect(0, 0, s.width, s.height);
+
+          var scrollX = phase;
+          var scrollY = playing ? phase * (vt / Math.max(0.2, Math.abs(vn) + 0.2)) * 0.35 : 0;
+          // 更直观：切向直接加竖直相位
+          scrollY = vt * phase * 0.25;
+
+          if (pattern === "edge") {
+            var spacing = 28;
+            for (var x = -spacing * 2; x < s.width + spacing * 2; x += spacing) {
+              var xx = x + (scrollX % spacing);
+              ctx.fillStyle = ((Math.floor((x + 1000) / spacing)) % 2 === 0) ? WAVE : "#f3e6d8";
+              ctx.fillRect(xx, -20 + (scrollY % 40), spacing * 0.55, s.height + 40);
+            }
+          } else {
+            // 角点网格：水平和竖直都有边
+            var step = 36;
+            ctx.strokeStyle = WAVE;
+            ctx.lineWidth = 3;
+            for (var gx = -2; gx < 30; gx++) {
+              var xg = gx * step + (scrollX % step);
+              ctx.beginPath();
+              ctx.moveTo(xg, 0);
+              ctx.lineTo(xg, s.height);
+              ctx.stroke();
+            }
+            ctx.strokeStyle = TEAL;
+            for (var gy = -2; gy < 30; gy++) {
+              var yg = gy * step + (scrollY % step);
+              ctx.beginPath();
+              ctx.moveTo(0, yg);
+              ctx.lineTo(s.width, yg);
+              ctx.stroke();
+            }
+            // 强调一个角
+            ctx.fillStyle = INK;
+            ctx.beginPath();
+            ctx.arc(cx - (scrollX % step) + step * 0.15, cy - (scrollY % step) + step * 0.15, 4, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          ctx.restore();
+
+          if (maskOn) {
+            ctx.strokeStyle = TEAL;
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.fillStyle = TEAL;
+            ctx.font = "12px sans-serif";
+            ctx.fillText("孔径", cx + radius + 8, cy);
+          } else {
+            ctx.fillStyle = MUTED;
+            ctx.font = "12px sans-serif";
+            ctx.fillText("遮罩已关闭：整幅可见", 12, 20);
+          }
+
+          // 图例箭头
+          ctx.strokeStyle = WAVE;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(24, s.height - 36);
+          ctx.lineTo(24 + 36, s.height - 36);
+          ctx.stroke();
+          ctx.fillStyle = WAVE;
+          ctx.font = "12px sans-serif";
+          ctx.fillText("法向", 66, s.height - 32);
+          ctx.strokeStyle = TEAL;
+          ctx.beginPath();
+          ctx.moveTo(120, s.height - 24);
+          ctx.lineTo(120, s.height - 54);
+          ctx.stroke();
+          ctx.fillStyle = TEAL;
+          ctx.fillText("切向", 128, s.height - 48);
+
+          var ambiguity =
+            pattern === "edge" && maskOn && radius < 70
+              ? "高（小孔+纯边缘：切向很难分辨）"
+              : pattern === "edge" && maskOn
+                ? "中（孔径变大，开始看到更多结构）"
+                : !maskOn
+                  ? "低（整幅可见）"
+                  : "低（角点提供两个方向的纹理）";
+
+          readout.textContent =
+            "真实运动：法向 " + vn.toFixed(1) + "，切向 " + vt.toFixed(1) +
+            "。当前歧义：" + ambiguity +
+            "。缩小孔径并拧切向——若图案几乎不变，你就「看见」了孔径问题。";
+
+          requestAnimationFrame(paint);
+        }
+
+        document.getElementById("ap-play").addEventListener("click", function () {
+          playing = !playing;
+        });
+        document.getElementById("ap-edge").addEventListener("click", function () {
+          pattern = "edge";
+          maskOn = true;
+        });
+        document.getElementById("ap-corner").addEventListener("click", function () {
+          pattern = "corner";
+          maskOn = true;
+        });
+        document.getElementById("ap-full").addEventListener("click", function () {
+          maskOn = !maskOn;
+        });
+        requestAnimationFrame(paint);
+      }
+
+      setupBlob();
+      setupBright();
+      setupConstraint();
+      setupAperture();
+    })();
+  </script>
+</body>
+</html>

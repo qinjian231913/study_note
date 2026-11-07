@@ -1,0 +1,49 @@
+---
+description: 学习笔记图文体例：小白向、图文并茂、HTML+脚本+交互（对齐傅里叶变换/拼接防抖系列）
+alwaysApply: true
+---
+
+# 学习笔记 · 样式与内容体例
+
+## 读者与深度
+
+- 把用户当**零基础小白**来教：短句、先现象后公式、公式旁必有白话、多用生活类比。
+- **越详细越好**；宁可写碎、写长，也不要跳步骤或堆术语。
+- **图文并茂**：关键步骤至少一图；能交互则做滑块/canvas；配可运行 Python 脚本。
+
+## 系列目录结构（新主题照此搭）
+
+```
+主题名/
+  index.html          # 大纲、卡片、路线、已写/待写
+  NN-slug.html        # 各篇正文
+  assets/style.css    # 复用已有主题样式，勿另起一套视觉
+  assets/figures/     # matplotlib 课文图 chNN_*.png
+  assets/images/      # OpenCV 等导出图
+  code/
+    plot_style.py     # 共用配色字体（可从已有主题复制）
+    requirements.txt
+    chNN_*.py
+  AGENT_CHAPTER_GUIDE.md  # 可选：给章节 subagent 的细则
+```
+
+范文：`傅里叶变换/`、`视频图片拼接防抖/`（尤其 `00`/`01`/`02` 篇）。
+
+## 视觉与 CSS
+
+- 共用 `assets/style.css` 体系：纸色底、terra `#c24d28`、teal `#0e6b66`、ink `#1c1915`。
+- Brand：同一 logo SVG +「主题名 · 副标题」；`lang="zh-CN"`。
+- 组件：`kicker` / `lede` / `meta`+`pill` / `toc` / `callout.note|run|try` / `playground` / `formula` / `quiz` / `crumbs`。
+
+## 单篇 HTML 必含
+
+现象 → 白话概念 → 图示 → 公式（配人话）→ **至少一处交互** → 跑脚本 →「改这里」练习 → 自测（`details.quiz` ≥3）→ 下一篇。
+
+文风：简体中文；图注格式「图 N-k　……」。
+
+## Python 脚本
+
+- 顶部 `# ===== 改这里 =====` 只影响 `chNN_my_*.png`。
+- `SHOW_WINDOW = False` + Agg；`self_check()` 打印「自检通过」。
+- 颜色：WAVE `#c24d28`，TEAL `#0e6b66`；OpenCV 用 BGR，给 Matplotlib 前 `[:, :, ::-1]`。
+- 优先主题内 `.venv`：`MPLCONFIGDIR=/tmp/mpl-cache .venv/bin/python code/chNN_*.py`。

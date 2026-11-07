@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第 1 篇 · 图像坐标与刚体直觉</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <a class="brand" href="index.html">
+        <svg class="logo" viewBox="0 0 52 26" aria-hidden="true">
+          <path d="M1 14 C 8 14, 8 3, 14 3 S 20 25, 26 14 S 38 3, 44 3 S 51 14, 51 14" fill="none" stroke="#c24d28" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        拼接与防抖 · 图像视频
+      </a>
+      <nav>
+        <a href="index.html">目录</a>
+        <a href="00-intro.html">第 0 篇</a>
+        <a href="01-coords.html" aria-current="page">第 1 篇</a>
+        <a href="02-affine.html">第 2 篇</a>
+      </nav>
+    </header>
+
+    <p class="kicker">第 1 篇 · 坐标与变换 · 约 45 分钟</p>
+    <h1>图像坐标与刚体直觉</h1>
+    <p class="lede">拼接要对齐，防抖要补偿，第一步都是：说清像素在哪，以及怎样把像素挪到新位置。这一篇约定坐标，亲手做平移、旋转、缩放，并建立「先改坐标，再重采样填像素」的直觉。</p>
+    <div class="meta">
+      <span class="pill">先读：第 0 篇</span>
+      <span class="pill">下一篇会用到本篇的坐标习惯</span>
+    </div>
+
+    <nav class="toc" aria-label="本篇目录">
+      <strong>本篇目录</strong>
+      <ol>
+        <li><a href="#grid">图像是一张格子表</a></li>
+        <li><a href="#axes">原点在左上，y 朝下</a></li>
+        <li><a href="#rigid">平移、旋转、缩放</a></li>
+        <li><a href="#resample">变换 = 改坐标 + 重采样</a></li>
+        <li><a href="#try">在网页里拧变换</a></li>
+        <li><a href="#run">运行脚本</a></li>
+        <li><a href="#edit">改参数再运行</a></li>
+        <li><a href="#check">自测</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="grid">图像是一张格子表</h2>
+    <p>灰度图或彩色图，在内存里都是数组：每个格子存一个（或三个）数。格子的位置用两个整数描述——这就是<strong>像素坐标</strong>。</p>
+    <p>本系列约定写作 <code>(x, y)</code>：</p>
+    <ul>
+      <li><strong>x</strong>：列号，从左往右增大</li>
+      <li><strong>y</strong>：行号，从<strong>上</strong>往<strong>下</strong>增大</li>
+    </ul>
+    <figure>
+      <img src="assets/images/ch01_grid.png" alt="5×7 像素网格，格子上标着 (x,y)">
+      <figcaption>图 1-1　放大后的小图。左上角橙色格是 <code>(0,0)</code>；青色格是 <code>(4,2)</code>——先数 x（列），再数 y（行）。OpenCV 里访问数组常用 <code>img[y, x]</code>，下标顺序是「行、列」，和坐标写法 (x, y) 正好对调，初学时最容易写反。</figcaption>
+    </figure>
+    <div class="callout note">
+      <p>口诀：<strong>坐标写 (x, y)，下标取 [y, x]</strong>。拼错一个，图就会「横竖颠倒地坏掉」。</p>
+    </div>
+
+    <h2 id="axes">原点在左上，y 朝下</h2>
+    <p>中学平面几何里，y 常常朝上；屏幕和图像库里，y 常常朝下。同一句「向上平移 10 像素」，在图像坐标里对应 <code>ty = -10</code>。</p>
+    <figure>
+      <img src="assets/figures/ch01_axes.png" alt="左侧图像坐标 y 向下，右侧数学坐标 y 向上">
+      <figcaption>图 1-2　左：本系列默认的图像坐标。右：对照用的数学坐标。后面公式若从论文抄来，先问一句：它的 y 朝哪边？</figcaption>
+    </figure>
+    <p>旋转方向也要钉死：本系列与 OpenCV 一致——<strong>角度为正表示逆时针</strong>（在图像坐标下，看起来仍是逆时针）。第 2 篇引入矩阵时还会再写一遍。</p>
+
+    <h2 id="rigid">平移、旋转、缩放</h2>
+    <p>先只动「形状不变」的几种变换。它们合起来有时叫相似变换；平移+旋转则是刚体变换。脚本里的卡片带一个橙色「L」和青色角点 P，方便看出转了哪边。</p>
+    <figure>
+      <img src="assets/images/ch01_card.png" alt="带 L 形与角点的示例卡片">
+      <figcaption>图 1-3　示例卡片。L 的开口方向、角点 P、中心十字，是后面判断旋转与缩放的参照。</figcaption>
+    </figure>
+
+    <h3>平移</h3>
+    <p>每个点加上同一个偏移：</p>
+    <p class="formula">x′ = x + t<sub>x</sub>，　y′ = y + t<sub>y</sub></p>
+    <p>整幅图像在桌布上被推了一下。拼两张图时，「先大致对齐」往往就是估一个平移。</p>
+
+    <h3>绕中心缩放</h3>
+    <p>先减掉中心，乘以倍数 s，再加回中心：</p>
+    <p class="formula">x′ = c<sub>x</sub> + s (x − c<sub>x</sub>)，　y′ = c<sub>y</sub> + s (y − c<sub>y</sub>)</p>
+    <p>s &gt; 1 放大，0 &lt; s &lt; 1 缩小。若不绕中心而绕原点缩放，图会往左上角「逃」。防抖里有时用轻微缩放，给裁切留余量。</p>
+
+    <h3>绕中心旋转</h3>
+    <p>把点看成相对中心的向量，转过角度 θ（弧度），再放回：</p>
+    <p class="formula">x′ = c<sub>x</sub> + cosθ · (x − c<sub>x</sub>) − sinθ · (y − c<sub>y</sub>)</p>
+    <p class="formula">y′ = c<sub>y</sub> + sinθ · (x − c<sub>x</sub>) + cosθ · (y − c<sub>y</sub>)</p>
+    <p>手持视频里，高频小角度旋转正是「抖」的常见成分。二维防抖经常估的就是每帧的 (t<sub>x</sub>, t<sub>y</sub>, θ)，有时再加一个 s。</p>
+
+    <figure>
+      <img src="assets/figures/ch01_trs.png" alt="原图、平移、旋转、缩放四宫格">
+      <figcaption>图 1-4　同一张卡片：原图；向右下平移；绕中心逆时针转 35°；绕中心缩到 0.7 倍。青点标出旋转/缩放中心。</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/figures/ch01_formulas.png" alt="平移缩放旋转与 OpenCV API 摘要">
+      <figcaption>图 1-5　本篇公式摘要。工程上用 <code>cv2.getRotationMatrix2D</code> 生成 2×3 矩阵，再用 <code>cv2.warpAffine</code> 真正改图像。</figcaption>
+    </figure>
+
+    <h2 id="resample">变换 = 改坐标 + 重采样</h2>
+    <p>公式给出的是「旧坐标 → 新坐标」。可图像是离散格子：新位置不一定落在整数像素上，也可能离开画布。</p>
+    <p>有两种思路：</p>
+    <ul>
+      <li><strong>正向映射</strong>：把每个源像素推到目标。简单，但目标图容易留洞或叠在一起。</li>
+      <li><strong>反向映射</strong>（常用）：遍历每个目标像素，用逆变换问「我该去源图哪里取样？」再在邻域里插值（双线性等）。这样每个目标格子都能填上色。</li>
+    </ul>
+    <figure>
+      <img src="assets/figures/ch01_resample.png" alt="正向映射留洞与反向映射取样对照">
+      <figcaption>图 1-6　左：正向推点，目标缝隙里可能没人去。右：反向拉样，OpenCV 的 <code>warpAffine</code> 走这条路。</figcaption>
+    </figure>
+    <p>所以口头说「把图转 30°」，计算机实际做的是：对输出画布上每个像素，算出对应的源坐标，读颜色，写回去。拼接与防抖后面所有的 warp，都建立在这件小事上。</p>
+
+    <h2 id="try">在网页里拧变换</h2>
+    <p>拖动平移、角度、缩放，看 L 怎么动。画布中心的青点是旋转/缩放中心；不会安装 Python 也能建立手感。</p>
+    <div class="playground">
+      <canvas id="warp-demo" class="demo tall" width="820" height="360" aria-label="平移旋转缩放交互示意"></canvas>
+      <div class="controls">
+        <label for="tx">平移 tx</label>
+        <input id="tx" type="range" min="-80" max="80" step="1" value="30">
+        <output id="tx-out" for="tx">30 px</output>
+        <label for="ty">平移 ty</label>
+        <input id="ty" type="range" min="-60" max="60" step="1" value="10">
+        <output id="ty-out" for="ty">10 px</output>
+        <label for="ang">旋转 θ</label>
+        <input id="ang" type="range" min="-60" max="60" step="1" value="20">
+        <output id="ang-out" for="ang">20°</output>
+        <label for="sc">缩放 s</label>
+        <input id="sc" type="range" min="50" max="150" step="1" value="100">
+        <output id="sc-out" for="sc">1.00</output>
+      </div>
+      <div class="actions">
+        <button type="button" class="primary" id="warp-reset">恢复示例</button>
+        <button type="button" id="warp-identity">回到原位</button>
+      </div>
+      <p class="readout" id="warp-readout" aria-live="polite"></p>
+    </div>
+    <p>建议顺序：先只动 tx/ty；再只动角度，确认 L 绕青点转；最后拧缩放。把 θ 调到 0、s 调到 1，应回到「只平移」。</p>
+
+    <h2 id="run">运行脚本</h2>
+    <p>核心几行（绕中心转再平移）：</p>
+    <pre><code>import cv2
+
+M = cv2.getRotationMatrix2D((cx, cy), angle_deg, scale)
+M[0, 2] += tx
+M[1, 2] += ty
+out = cv2.warpAffine(image, M, (width, height))</code></pre>
+    <p><code>getRotationMatrix2D</code> 得到 2×3 矩阵：左边 2×2 管旋转和缩放，最后一列管平移。第 2 篇会把它放进「齐次坐标」里，和仿射、透视排成一家人。</p>
+
+    <div class="callout run">
+      <h3>跑一下</h3>
+      <p>进入本文件夹（已按第 0 篇建好虚拟环境的话先 <code>source .venv/bin/activate</code>）：</p>
+      <pre class="terminal"><code>python code/ch01_coords.py</code></pre>
+      <p>成功后终端有「自检通过」，并写出：</p>
+      <ul>
+        <li><code>ch01_axes.png</code>、<code>ch01_trs.png</code>、<code>ch01_resample.png</code>、<code>ch01_formulas.png</code>：课文对照图</li>
+        <li><code>assets/images/ch01_grid.png</code>、<code>ch01_card.png</code>：网格与卡片</li>
+        <li><code>ch01_my_transform.png</code>：只跟随顶部「改这里」</li>
+      </ul>
+    </div>
+
+    <h2 id="edit">改参数再运行</h2>
+    <p>打开 <a href="code/ch01_coords.py"><code>code/ch01_coords.py</code></a>，只改顶部四个数。</p>
+    <div class="callout try">
+      <h3>改这里</h3>
+      <ol>
+        <li>设 <code>TX=0, TY=0, ANGLE_DEG=0, SCALE=1.0</code>，运行后右图应与左图几乎一样。</li>
+        <li>只改 <code>ANGLE_DEG=90</code>。L 的长边朝向应转过四分之一圈；角点 P 绕中心走到新位置。</li>
+        <li>设 <code>SCALE=0.5</code> 且角度为 0，卡片应缩到大约一半，中心大致不动。</li>
+        <li>把 <code>TY</code> 改成负数（如 <code>-40</code>）。在图像坐标里这是<strong>向上</strong>移——对照图 1-2 想一遍。</li>
+      </ol>
+    </div>
+
+    <h2 id="check">自测</h2>
+    <p>先自己答，再展开。</p>
+    <details class="quiz">
+      <summary>1. 像素 (3, 5) 表示什么？用 OpenCV 读取该像素时下标怎么写？</summary>
+      <p>第 3 列、第 5 行（x=3, y=5）。读取写作 <code>img[5, 3]</code>（以及彩色时的通道维）。</p>
+    </details>
+    <details class="quiz">
+      <summary>2. 图像坐标里要把图案向上移 12 像素，ty 应取正还是负？</summary>
+      <p>取负：y 向下为正，向上移动就是 y 减小，ty = −12。</p>
+    </details>
+    <details class="quiz">
+      <summary>3. 为什么 warp 常用「反向映射」而不是把源像素正向推过去？</summary>
+      <p>正向容易在目标图留下空洞或重叠；反向保证每个目标像素都去源图取一次样（再插值），输出更完整、更好实现。</p>
+    </details>
+    <details class="quiz">
+      <summary>4. 只做绕中心旋转、不平移时，中心点的坐标会变吗？</summary>
+      <p>不会。中心到自己的向量是 0，转完还是 0，加回中心后仍在原地。</p>
+    </details>
+
+    <h2>下一篇</h2>
+    <p>平移、旋转、缩放还拼不出「近大远小」的梯形。下一篇引入仿射与透视，并用齐次坐标把平移写进矩阵乘法。</p>
+    <p><a href="02-affine.html">第 2 篇 · 仿射、透视与齐次坐标</a></p>
+
+    <nav class="crumbs" aria-label="翻页">
+      <a href="00-intro.html">上一篇</a>
+      <a href="index.html">目录</a>
+      <a href="02-affine.html">下一篇</a>
+    </nav>
+  </div>
+
+  <script>
+    (function () {
+      var INK = "#1c1915";
+      var MUTED = "#5c564c";
+      var WAVE = "#c24d28";
+      var TEAL = "#0e6b66";
+
+      function surface(canvas) {
+        var dpr = Math.min(window.devicePixelRatio || 1, 2);
+        var width = canvas.clientWidth || 640;
+        var height = canvas.clientHeight || 360;
+        var pw = Math.round(width * dpr);
+        var ph = Math.round(height * dpr);
+        if (canvas.width !== pw || canvas.height !== ph) {
+          canvas.width = pw;
+          canvas.height = ph;
+        }
+        var ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = "#fffdf8";
+        ctx.fillRect(0, 0, width, height);
+        return { ctx: ctx, width: width, height: height };
+      }
+
+      function drawCard(ctx) {
+        // 在局部坐标里画一张 160×110 的卡片，原点在卡片中心
+        var w = 160;
+        var h = 110;
+        ctx.fillStyle = "#f8f4ec";
+        ctx.strokeStyle = "#3c3732";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.rect(-w / 2, -h / 2, w, h);
+        ctx.fill();
+        ctx.stroke();
+
+        // 网格
+        ctx.strokeStyle = "#e6dccb";
+        ctx.lineWidth = 1;
+        var x, y;
+        for (x = -w / 2; x <= w / 2; x += 20) {
+          ctx.beginPath();
+          ctx.moveTo(x, -h / 2);
+          ctx.lineTo(x, h / 2);
+          ctx.stroke();
+        }
+        for (y = -h / 2; y <= h / 2; y += 20) {
+          ctx.beginPath();
+          ctx.moveTo(-w / 2, y);
+          ctx.lineTo(w / 2, y);
+          ctx.stroke();
+        }
+
+        // L
+        ctx.fillStyle = WAVE;
+        ctx.fillRect(-50, -35, 22, 70);
+        ctx.fillRect(-50, 15, 85, 22);
+
+        // 角点 P（偏左上）
+        ctx.fillStyle = TEAL;
+        ctx.beginPath();
+        ctx.arc(-60, -40, 6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = TEAL;
+        ctx.font = "12px Microsoft YaHei, sans-serif";
+        ctx.fillText("P", -52, -44);
+
+        // 中心十字
+        ctx.strokeStyle = INK;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(-8, 0);
+        ctx.lineTo(8, 0);
+        ctx.moveTo(0, -8);
+        ctx.lineTo(0, 8);
+        ctx.stroke();
+      }
+
+      function drawWarp() {
+        var canvas = document.getElementById("warp-demo");
+        var box = surface(canvas);
+        var ctx = box.ctx;
+        var width = box.width;
+        var height = box.height;
+        var tx = Number(document.getElementById("tx").value);
+        var ty = Number(document.getElementById("ty").value);
+        var ang = Number(document.getElementById("ang").value);
+        var sc = Number(document.getElementById("sc").value) / 100;
+
+        // 画布参考线
+        ctx.strokeStyle = "#e6dccb";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(20, 20, width - 40, height - 50);
+
+        var cx = width / 2;
+        var cy = height / 2 - 8;
+
+        // 变换中心
+        ctx.fillStyle = TEAL;
+        ctx.beginPath();
+        ctx.arc(cx, cy, 4.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.save();
+        ctx.translate(cx + tx, cy + ty);
+        ctx.rotate((-ang * Math.PI) / 180); // canvas 的 y 向下，角度取负以保持「正角=屏幕逆时针」
+        ctx.scale(sc, sc);
+        drawCard(ctx);
+        ctx.restore();
+
+        // 中心标注（未平移的中心）
+        ctx.fillStyle = MUTED;
+        ctx.font = "13px Microsoft YaHei, sans-serif";
+        ctx.fillText("变换中心", cx + 10, cy - 10);
+        ctx.fillText("图像坐标：x 右，y 下；θ>0 为逆时针", 28, height - 16);
+
+        document.getElementById("tx-out").textContent = tx + " px";
+        document.getElementById("ty-out").textContent = ty + " px";
+        document.getElementById("ang-out").textContent = ang + "°";
+        document.getElementById("sc-out").textContent = sc.toFixed(2);
+        document.getElementById("warp-readout").textContent =
+          "tx = " + tx + "，ty = " + ty + "（" + (ty >= 0 ? "向下" : "向上") +
+          "），θ = " + ang + "°，s = " + sc.toFixed(2) +
+          "。卡片先绕青点缩放旋转，再平移；这与 getRotationMatrix2D 再加平移列一致。";
+      }
+
+      ["tx", "ty", "ang", "sc"].forEach(function (id) {
+        document.getElementById(id).addEventListener("input", drawWarp);
+      });
+      document.getElementById("warp-reset").addEventListener("click", function () {
+        document.getElementById("tx").value = "30";
+        document.getElementById("ty").value = "10";
+        document.getElementById("ang").value = "20";
+        document.getElementById("sc").value = "100";
+        drawWarp();
+      });
+      document.getElementById("warp-identity").addEventListener("click", function () {
+        document.getElementById("tx").value = "0";
+        document.getElementById("ty").value = "0";
+        document.getElementById("ang").value = "0";
+        document.getElementById("sc").value = "100";
+        drawWarp();
+      });
+      window.addEventListener("resize", drawWarp);
+      drawWarp();
+    })();
+  </script>
+  <noscript>
+    <div class="wrap">
+      <p class="callout note">浏览器禁用了脚本时，滑块不会动。上面的静态图和 Python 脚本仍然可以阅读、运行。</p>
+    </div>
+  </noscript>
+</body>
+</html>
